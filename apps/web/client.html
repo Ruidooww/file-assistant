@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>客户端 - File Assistant</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="/assets/client.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar no-print">
+      <div class="topbar-inner">
+        <a class="brand" href="/">
+          <strong>File Assistant</strong>
+          <span>客户端</span>
+        </a>
+        <nav class="nav">
+          <a class="button ghost" href="/admin">管理控制台</a>
+          <button id="refreshBtn">刷新</button>
+          <button id="logoutBtn">清除本机注册</button>
+        </nav>
+      </div>
+    </header>
+
+    <main class="shell grid">
+      <section class="panel" id="registerPanel">
+        <div class="panel-head">
+          <div>
+            <h2>注册客户端</h2>
+            <p class="muted">需要管理员生成的安装码。</p>
+          </div>
+        </div>
+        <form id="registerForm">
+          <div class="grid two">
+            <div>
+              <div class="field">
+                <label for="installCode">安装码</label>
+                <input id="installCode" required placeholder="FA-XXXX-XXXX-XXXX-XXXX" />
+              </div>
+              <div class="field">
+                <label for="displayName">显示名称</label>
+                <input id="displayName" required value="Client" />
+              </div>
+            </div>
+            <div>
+              <div class="field">
+                <label for="macAddress">Mac 地址</label>
+                <input id="macAddress" placeholder="例如 00-11-22-33-44-55" />
+              </div>
+              <div class="field">
+                <label for="ipAddress">IP 地址</label>
+                <input id="ipAddress" placeholder="例如 192.168.1.20" />
+              </div>
+            </div>
+          </div>
+          <button class="primary" type="submit">安装并注册</button>
+        </form>
+      </section>
+
+      <section class="grid two" id="clientContent" hidden>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>发送文件</h2>
+              <p class="muted" id="meLine"></p>
+            </div>
+          </div>
+          <form id="uploadForm">
+            <div class="field">
+              <label for="receiverId">指定接收人员</label>
+              <select id="receiverId" required></select>
+            </div>
+            <div class="field">
+              <label for="fileInput">选择文件</label>
+              <input id="fileInput" type="file" required />
+            </div>
+            <div class="field">
+              <label for="uploadNote">备注</label>
+              <textarea id="uploadNote" placeholder="可留空"></textarea>
+            </div>
+            <div class="checks">
+              <label class="check"><input id="retainOnServer" type="checkbox" /> <span>申请重要备份</span></label>
+            </div>
+            <div class="actions" style="margin-top: 12px">
+              <button class="primary" type="submit">开始上传</button>
+              <span class="muted" id="uploadStatus"></span>
+            </div>
+            <div class="progress" style="margin-top: 12px"><span id="uploadProgress"></span></div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>文件中转</h2>
+              <p class="muted">发送方只能查看状态；发给你的文件放行后可接收。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>文件</th>
+                  <th>方向</th>
+                  <th>状态</th>
+                  <th>服务器</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="transfersBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+    </main>
+  </body>
+</html>

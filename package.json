@@ -1,0 +1,15 @@
+{
+  "name": "file-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Enterprise file transfer bridge with optional transit confirmation, install codes, client binding, resumable chunk upload, and audit logs.",
+  "main": "apps/server/server.js",
+  "scripts": {
+    "start": "node apps/server/server.js",
+    "test": "node --test test/api.test.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "UNLICENSED"
+}
