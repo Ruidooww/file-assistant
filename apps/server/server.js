@@ -8,6 +8,8 @@ const { createDefaultStore } = require("./db");
 
 const DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024;
 const JSON_LIMIT_BYTES = 1024 * 1024;
+const CLIENT_BOOTSTRAP_BEGIN = "FA_CLIENT_BOOTSTRAP_V1_BEGIN";
+const CLIENT_BOOTSTRAP_END = "FA_CLIENT_BOOTSTRAP_V1_END";
 
 function nowIso() {
   return new Date().toISOString();
@@ -69,6 +71,52 @@ function sendError(res, error) {
   }
 }
 
+function logFileCleanupFailure(target, error) {
+  console.error(`[FileAssistant] Failed to clean up ${target}.`, error);
+}
+
+async function removePathQuietly(target) {
+  try {
+    await fs.promises.rm(target, { recursive: true, force: true });
+  } catch (error) {
+    logFileCleanupFailure(target, error);
+  }
+}
+
+async function destroyStreamAndWaitForClose(stream) {
+  if (stream.closed) {
+    return;
+  }
+  const closed = once(stream, "close").catch(() => {});
+  stream.destroy();
+  await closed;
+}
+
+function pipeFileToResponse(res, filePath) {
+  const stream = fs.createReadStream(filePath);
+  const onResponseClose = () => {
+    if (!res.writableEnded && !stream.destroyed) {
+      stream.destroy();
+    }
+  };
+  const cleanup = () => {
+    res.off("close", onResponseClose);
+  };
+
+  res.on("close", onResponseClose);
+  stream.on("close", cleanup);
+  stream.on("error", (error) => {
+    cleanup();
+    console.error(`[FileAssistant] Failed to stream ${filePath}.`, error);
+    if (!res.headersSent) {
+      sendError(res, error);
+      return;
+    }
+    res.destroy(error);
+  });
+  stream.pipe(res);
+}
+
 function normalizeList(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
@@ -92,10 +140,42 @@ function sanitizeFileName(fileName) {
   return base.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 180) || "file.bin";
 }
 
-function publicClient(client) {
+function sanitizePackageLabel(label) {
+  return sanitizeFileName(String(label || "client").replace(/\s+/g, "-"))
+    .replace(/\.exe$/i, "")
+    .slice(0, 64) || "client";
+}
+
+function normalizeServerUrl(value) {
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) throw httpError(400, "Server URL is required");
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (error) {
+    throw httpError(400, "Server URL is invalid");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw httpError(400, "Server URL must start with http:// or https://");
+  }
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+function publicClient(client, data = null) {
   if (!client) return null;
   const { secretHash, ...rest } = client;
-  return rest;
+  if (!data || !client.employeeId) return rest;
+  const employee = data.employees.find((item) => item.id === client.employeeId) || null;
+  const department = employee?.departmentId
+    ? data.departments.find((item) => item.id === employee.departmentId) || null
+    : null;
+  return {
+    ...rest,
+    employeeName: employee?.name || "",
+    employeeNo: employee?.employeeNo || "",
+    employeeTitle: employee?.title || "",
+    departmentName: department?.name || "",
+  };
 }
 
 function publicDepartment(department) {
@@ -113,6 +193,66 @@ function publicTransferRule(rule) {
 function publicInstallCode(code) {
   const { codeHash, ...rest } = code;
   return rest;
+}
+
+function normalizeOpenRegistration(settings) {
+  const open = settings?.openRegistration || {};
+  return {
+    enabled: open.enabled === true,
+    expiresAt: open.expiresAt || null,
+    maxUses: Math.max(1, Number(open.maxUses || 50)),
+    usedCount: Math.max(0, Number(open.usedCount || 0)),
+    defaultAllowWhenUnmanaged: open.defaultAllowWhenUnmanaged !== false,
+    updatedAt: open.updatedAt || null,
+  };
+}
+
+function isOpenRegistrationActive(open) {
+  if (!open.enabled) return false;
+  if (open.usedCount >= open.maxUses) return false;
+  if (!open.expiresAt) return true;
+  const expiresAt = Date.parse(open.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
+function publicOpenRegistration(settings) {
+  const open = normalizeOpenRegistration(settings);
+  return {
+    ...open,
+    active: isOpenRegistrationActive(open),
+    remainingUses: Math.max(0, open.maxUses - open.usedCount),
+  };
+}
+
+function createRegisteredClient(data, body, clientSecret, options = {}) {
+  const macAddress = String(body.macAddress || "").trim();
+  const ipAddress = String(body.ipAddress || "").trim();
+  const client = {
+    id: createId("client"),
+    displayName: String(body.displayName || "Client"),
+    macAddress,
+    ipAddress,
+    platform: String(body.platform || ""),
+    installCodeId: options.installCodeId || null,
+    secretHash: sha256(clientSecret),
+    employeeId: null,
+    status: "active",
+    managed: true,
+    allowWhenUnmanaged: options.allowWhenUnmanaged !== false,
+    mustMatchMac: options.mustMatchMac ?? Boolean(macAddress),
+    mustMatchIp: options.mustMatchIp ?? Boolean(ipAddress),
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+  data.clients.unshift(client);
+  appendLog(data, "client", client.id, "client.registered", {
+    installCodeId: client.installCodeId,
+    registrationMode: options.registrationMode || "install-code",
+    displayName: client.displayName,
+    macAddress,
+    ipAddress,
+  });
+  return publicClient(client);
 }
 
 function publicTransfer(transfer) {
@@ -173,6 +313,8 @@ function permissionForAdminRoute(method, pathname) {
   if (pathname.startsWith("/api/admin/employees")) return "org.manage";
   if (pathname.startsWith("/api/admin/transfer-rules")) return "org.manage";
   if (pathname.startsWith("/api/admin/install-codes")) return "install_code.manage";
+  if (pathname.startsWith("/api/admin/client-packages")) return "install_code.manage";
+  if (pathname.startsWith("/api/admin/open-registration")) return "client.manage";
   if (pathname.startsWith("/api/admin/clients")) return "client.manage";
   if (pathname.startsWith("/api/admin/transfers")) return method === "GET" ? "transfer.view" : "transfer.review";
   if (pathname.startsWith("/api/admin/logs")) return "audit.view";
@@ -351,7 +493,8 @@ async function mergeTransferFile(store, dataDir, transferId) {
     writer.end();
     await once(writer, "finish");
   } catch (error) {
-    writer.destroy();
+    await destroyStreamAndWaitForClose(writer);
+    await removePathQuietly(paths.fileDir);
     throw error;
   }
 
@@ -400,7 +543,39 @@ async function streamFile(res, transfer, disposition) {
     "Content-Disposition": `${disposition}; filename*=UTF-8''${encodedName}`,
     "Cache-Control": "no-store",
   });
-  fs.createReadStream(transfer.filePath).pipe(res);
+  pipeFileToResponse(res, transfer.filePath);
+}
+
+function streamDownloadPath(res, filePath, fileName) {
+  if (!fs.existsSync(filePath)) {
+    throw httpError(404, "File is not available");
+  }
+  const stat = fs.statSync(filePath);
+  const encodedName = encodeURIComponent(fileName || path.basename(filePath));
+  res.writeHead(200, {
+    "Content-Type": "application/octet-stream",
+    "Content-Length": stat.size,
+    "Content-Disposition": `attachment; filename*=UTF-8''${encodedName}`,
+    "Cache-Control": "no-store",
+  });
+  pipeFileToResponse(res, filePath);
+}
+
+function appendClientBootstrapConfig(templatePath, outputPath, config) {
+  if (!fs.existsSync(templatePath)) {
+    throw httpError(500, `Client installer template was not found: ${templatePath}`);
+  }
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const payload = JSON.stringify(config, null, 2);
+  const block = [
+    "",
+    CLIENT_BOOTSTRAP_BEGIN,
+    payload,
+    CLIENT_BOOTSTRAP_END,
+    "",
+  ].join("\r\n");
+  const template = fs.readFileSync(templatePath);
+  fs.writeFileSync(outputPath, Buffer.concat([template, Buffer.from(block, "utf8")]));
 }
 
 function bootstrapAdminUsers(store, options = {}) {
@@ -454,6 +629,8 @@ function createAppServer(options = {}) {
   const rootDir = resolveConfigPath(process.cwd(), options.rootDir || process.env.FILE_ASSISTANT_ROOT_DIR || process.env.ROOT_DIR) || defaultRootDir;
   const dataDir = resolveConfigPath(rootDir, options.dataDir || process.env.FILE_ASSISTANT_DATA_DIR || process.env.DATA_DIR) || path.join(rootDir, "data");
   const publicDir = resolveConfigPath(rootDir, options.publicDir || process.env.FILE_ASSISTANT_PUBLIC_DIR || process.env.PUBLIC_DIR) || path.join(rootDir, "apps", "web");
+  const clientInstallerTemplatePath = resolveConfigPath(rootDir, options.clientInstallerTemplatePath || process.env.FILE_ASSISTANT_CLIENT_INSTALLER_TEMPLATE)
+    || path.join(rootDir, "deploy", "client-installer", "FileAssistantClientSetup.exe");
   const adminToken = runtimeOption(options, "adminToken", "ADMIN_TOKEN", "admin-change-me");
   const adminUsername = runtimeOption(options, "adminUsername", "ADMIN_USERNAME", "admin");
   const adminPassword = runtimeOption(options, "adminPassword", "ADMIN_PASSWORD", "admin123456");
@@ -803,6 +980,50 @@ function createAppServer(options = {}) {
       return sendJson(res, 200, data.installCodes.map(publicInstallCode));
     }
 
+    if (req.method === "GET" && url.pathname === "/api/admin/open-registration") {
+      const data = store.snapshot();
+      return sendJson(res, 200, publicOpenRegistration(data.settings));
+    }
+
+    if (req.method === "PATCH" && url.pathname === "/api/admin/open-registration") {
+      const body = await readJson(req);
+      const updated = await store.mutate((data) => {
+        const current = normalizeOpenRegistration(data.settings);
+        const wasEnabled = current.enabled;
+        if ("enabled" in body) {
+          current.enabled = Boolean(body.enabled);
+        }
+        if ("maxUses" in body) {
+          current.maxUses = Math.max(1, Number(body.maxUses || 50));
+        }
+        if ("defaultAllowWhenUnmanaged" in body) {
+          current.defaultAllowWhenUnmanaged = Boolean(body.defaultAllowWhenUnmanaged);
+        }
+        if (current.enabled) {
+          const durationMinutes = Math.max(1, Number(body.durationMinutes || 60));
+          current.expiresAt = new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
+          if (!wasEnabled || body.resetUsedCount !== false) {
+            current.usedCount = 0;
+          }
+        } else {
+          current.expiresAt = null;
+          current.usedCount = 0;
+        }
+        current.updatedAt = nowIso();
+        data.settings = {
+          ...(data.settings || {}),
+          openRegistration: current,
+        };
+        appendLog(data, "admin", admin.id, "open_registration.updated", {
+          enabled: current.enabled,
+          expiresAt: current.expiresAt,
+          maxUses: current.maxUses,
+        });
+        return publicOpenRegistration(data.settings);
+      });
+      return sendJson(res, 200, updated);
+    }
+
     if (req.method === "POST" && url.pathname === "/api/admin/install-codes") {
       const body = await readJson(req);
       const plainCode = generateInstallCode();
@@ -836,6 +1057,87 @@ function createAppServer(options = {}) {
       return sendJson(res, 201, { ...created, code: plainCode });
     }
 
+    if (req.method === "POST" && url.pathname === "/api/admin/client-packages") {
+      const body = await readJson(req);
+      const serverUrl = normalizeServerUrl(body.serverUrl);
+      const label = String(body.label || "专属客户端安装包").trim() || "专属客户端安装包";
+      const maxUses = Math.max(1, Number.parseInt(body.maxUses, 10) || 100);
+      const validDays = Math.max(1, Number.parseInt(body.validDays, 10) || 30);
+      const defaultAllowWhenUnmanaged = body.defaultAllowWhenUnmanaged !== false;
+      const expiresAt = new Date(Date.now() + validDays * 24 * 60 * 60 * 1000).toISOString();
+      const plainCode = generateInstallCode();
+      const codeId = createId("code");
+      const packageId = createId("pkg");
+      const fileName = `FileAssistantClientSetup-${sanitizePackageLabel(label)}-${packageId}.exe`;
+      const packageDir = path.join(dataDir, "client-packages");
+      const packagePath = path.join(packageDir, fileName);
+
+      appendClientBootstrapConfig(clientInstallerTemplatePath, packagePath, {
+        version: 1,
+        serverUrl,
+        deployToken: plainCode,
+        autoRegister: true,
+        generatedAt: nowIso(),
+        label,
+      });
+
+      const created = await store.mutate((data) => {
+        const code = {
+          id: codeId,
+          label,
+          codeHash: sha256(plainCode),
+          maxUses,
+          usedCount: 0,
+          status: "active",
+          expiresAt,
+          allowedMacs: [],
+          allowedIps: [],
+          bindToFirstMac: false,
+          bindToFirstIp: false,
+          boundMac: null,
+          boundIp: null,
+          defaultAllowWhenUnmanaged,
+          createdAt: nowIso(),
+          clientIds: [],
+        };
+        data.installCodes.unshift(code);
+        appendLog(data, "admin", admin.id, "install_code.created", {
+          installCodeId: code.id,
+          label: code.label,
+          maxUses: code.maxUses,
+        });
+        appendLog(data, "admin", admin.id, "client_package.created", {
+          packageId,
+          fileName,
+          installCodeId: code.id,
+          serverUrl,
+          maxUses,
+          expiresAt,
+        });
+        return publicInstallCode(code);
+      });
+
+      return sendJson(res, 201, {
+        id: packageId,
+        fileName,
+        downloadUrl: `/api/admin/client-packages/${encodeURIComponent(fileName)}/download`,
+        installCodeId: created.id,
+        expiresAt,
+        maxUses,
+        serverUrl,
+      });
+    }
+
+    const clientPackageDownload = url.pathname.match(/^\/api\/admin\/client-packages\/([^/]+)\/download$/);
+    if (clientPackageDownload && req.method === "GET") {
+      const decodedName = decodeURIComponent(clientPackageDownload[1]);
+      if (decodedName !== path.basename(decodedName) || !decodedName.endsWith(".exe")) {
+        throw httpError(400, "Package file name is invalid");
+      }
+      const packagePath = path.join(dataDir, "client-packages", decodedName);
+      return streamDownloadPath(res, packagePath, decodedName);
+    }
+
     const installPatch = url.pathname.match(/^\/api\/admin\/install-codes\/([^/]+)$/);
     if (installPatch && req.method === "PATCH") {
       const codeId = installPatch[1];
@@ -856,7 +1158,7 @@ function createAppServer(options = {}) {
 
     if (req.method === "GET" && url.pathname === "/api/admin/clients") {
       const data = store.snapshot();
-      return sendJson(res, 200, data.clients.map(publicClient));
+      return sendJson(res, 200, data.clients.map((client) => publicClient(client, data)));
     }
 
     const clientPatch = url.pathname.match(/^\/api\/admin\/clients\/([^/]+)$/);
@@ -1004,6 +1306,30 @@ function createAppServer(options = {}) {
       return sendJson(res, 200, data.logs.slice(0, 300));
     }
 
+    if (req.method === "POST" && url.pathname === "/api/client/open-register") {
+      const body = await readJson(req);
+      const clientSecret = randomSecret();
+      const registered = await store.mutate((data) => {
+        const open = normalizeOpenRegistration(data.settings);
+        if (!isOpenRegistrationActive(open)) {
+          throw httpError(403, "Open registration is not enabled");
+        }
+        const registeredClient = createRegisteredClient(data, body, clientSecret, {
+          installCodeId: null,
+          allowWhenUnmanaged: open.defaultAllowWhenUnmanaged,
+          registrationMode: "open-registration",
+        });
+        open.usedCount += 1;
+        open.updatedAt = nowIso();
+        data.settings = {
+          ...(data.settings || {}),
+          openRegistration: open,
+        };
+        return registeredClient;
+      });
+      return sendJson(res, 201, { client: registered, clientSecret });
+    }
+
     if (req.method === "POST" && (url.pathname === "/api/client/register" || url.pathname === "/api/client/auto-register")) {
       const body = await readJson(req);
       const providedCode = String(body.installCode || body.deployToken || "");
@@ -1035,34 +1361,18 @@ function createAppServer(options = {}) {
           if (!code.boundIp) code.boundIp = ipAddress;
           if (!sameText(code.boundIp, ipAddress)) throw httpError(403, "Install code is bound to another IP");
         }
-        const client = {
-          id: createId("client"),
-          displayName: String(body.displayName || "Client"),
-          macAddress,
-          ipAddress,
-          platform: String(body.platform || ""),
-          installCodeId: code.id,
-          secretHash: sha256(clientSecret),
-          employeeId: null,
-          status: "active",
-          managed: true,
-          allowWhenUnmanaged: code.defaultAllowWhenUnmanaged,
-          mustMatchMac: Boolean(macAddress),
-          mustMatchIp: Boolean(ipAddress),
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-        };
         code.usedCount += 1;
+        const client = createRegisteredClient(data, body, clientSecret, {
+          installCodeId: code.id,
+          allowWhenUnmanaged: code.defaultAllowWhenUnmanaged,
+          registrationMode,
+        });
         code.clientIds.push(client.id);
-        data.clients.unshift(client);
-        appendLog(data, "client", client.id, "client.registered", {
+        appendLog(data, "client", client.id, "install_code.used", {
           installCodeId: code.id,
           registrationMode,
-          displayName: client.displayName,
-          macAddress,
-          ipAddress,
         });
-        return publicClient(client);
+        return client;
       });
       return sendJson(res, 201, { client: registered, clientSecret });
     }
@@ -1075,7 +1385,7 @@ function createAppServer(options = {}) {
     if (req.method === "GET" && url.pathname === "/api/client/me") {
       const data = store.snapshot();
       const client = resolveClient(data, req);
-      return sendJson(res, 200, publicClient(client));
+      return sendJson(res, 200, publicClient(client, data));
     }
 
     if (req.method === "GET" && url.pathname === "/api/client/clients") {
@@ -1308,7 +1618,7 @@ function createAppServer(options = {}) {
       const self = resolveClient(data, req);
       const transfer = data.transfers.find((item) => item.id === transferId);
       if (!transfer) throw httpError(404, "Transfer not found");
-      if (transfer.status !== "approved" && transfer.status !== "ready_to_deliver") {
+      if (transfer.status !== "ready_to_deliver") {
         throw httpError(403, "Transfer is not ready to receive");
       }
       if (transfer.receiverId !== self.id) {
@@ -1338,7 +1648,7 @@ function createAppServer(options = {}) {
         const transfer = data.transfers.find((item) => item.id === transferId);
         if (!transfer) throw httpError(404, "Transfer not found");
         if (transfer.receiverId !== self.id) throw httpError(403, "Only receiver can confirm delivery");
-        if (transfer.status !== "approved" && transfer.status !== "ready_to_deliver" && transfer.status !== "delivered") {
+        if (transfer.status !== "ready_to_deliver" && transfer.status !== "delivered") {
           throw httpError(409, "Transfer cannot be confirmed in current status");
         }
         transfer.status = "delivered";
@@ -1391,7 +1701,7 @@ function createAppServer(options = {}) {
       "Content-Type": mime,
       "Cache-Control": "no-store",
     });
-    fs.createReadStream(target).pipe(res);
+    pipeFileToResponse(res, target);
   }
 
   const server = http.createServer((req, res) => {
@@ -1419,7 +1729,7 @@ function createAppServer(options = {}) {
   });
 
   server.store = store;
-  server.options = { rootDir, dataDir, publicDir, adminToken, adminUsername, adminPassword, initialAdminSetup, chunkSize };
+  server.options = { rootDir, dataDir, publicDir, clientInstallerTemplatePath, adminToken, adminUsername, adminPassword, initialAdminSetup, chunkSize };
   return server;
 }
 

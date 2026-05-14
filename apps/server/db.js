@@ -8,9 +8,23 @@ try {
   DatabaseSync = null;
 }
 
+function createDefaultSettings() {
+  return {
+    openRegistration: {
+      enabled: false,
+      expiresAt: null,
+      maxUses: 50,
+      usedCount: 0,
+      defaultAllowWhenUnmanaged: true,
+      updatedAt: null,
+    },
+  };
+}
+
 function createEmptyDatabase() {
   return {
     version: 3,
+    settings: createDefaultSettings(),
     departments: [],
     employees: [],
     transferRules: [],
@@ -31,6 +45,7 @@ function normalizeDatabase(data) {
       normalized[key] = [];
     }
   }
+  normalized.settings = normalizeSettings(normalized.settings);
   normalized.version = 3;
   return normalized;
 }
@@ -48,14 +63,18 @@ function json(value, fallback) {
   }
 }
 
+function logMutateWriteFailure(storeName, consecutiveFailures, error) {
+  console.error(`[FileAssistant] ${storeName} mutate write failed (${consecutiveFailures} consecutive).`, error);
+}
+
 function normalizeTransfer(item) {
   const transfer = { ...(item || {}) };
-  const status = transfer.status || "uploading";
+  const status = transfer.status === "approved" ? "ready_to_deliver" : (transfer.status || "uploading");
   const retainOnServer = Boolean(transfer.retainOnServer);
   const hasStoredFile = Boolean(transfer.filePath);
   let deliveryStatus = transfer.deliveryStatus;
-  if (!deliveryStatus || (deliveryStatus === "not_ready" && (status === "approved" || status === "ready_to_deliver" || status === "delivered"))) {
-    deliveryStatus = transfer.deliveredAt ? "delivered" : (status === "approved" || status === "ready_to_deliver" ? "waiting" : "not_ready");
+  if (!deliveryStatus || (deliveryStatus === "not_ready" && (status === "ready_to_deliver" || status === "delivered"))) {
+    deliveryStatus = transfer.deliveredAt ? "delivered" : (status === "ready_to_deliver" ? "waiting" : "not_ready");
   }
   let serverFileStatus = transfer.serverFileStatus;
   if (!serverFileStatus || (serverFileStatus === "uploading" && hasStoredFile && status !== "uploading" && status !== "assembling")) {
@@ -66,6 +85,7 @@ function normalizeTransfer(item) {
 
   return {
     ...transfer,
+    status,
     senderEmployeeId: transfer.senderEmployeeId || null,
     senderEmployeeName: transfer.senderEmployeeName || "",
     receiverEmployeeId: transfer.receiverEmployeeId || null,
@@ -106,6 +126,24 @@ function normalizeClient(item) {
   };
 }
 
+function normalizeSettings(settings) {
+  const defaults = createDefaultSettings();
+  const value = { ...(settings || {}) };
+  const openRegistration = { ...defaults.openRegistration, ...(value.openRegistration || {}) };
+  return {
+    ...defaults,
+    ...value,
+    openRegistration: {
+      enabled: openRegistration.enabled === true,
+      expiresAt: openRegistration.expiresAt || null,
+      maxUses: Math.max(1, Number(openRegistration.maxUses || defaults.openRegistration.maxUses)),
+      usedCount: Math.max(0, Number(openRegistration.usedCount || 0)),
+      defaultAllowWhenUnmanaged: openRegistration.defaultAllowWhenUnmanaged !== false,
+      updatedAt: openRegistration.updatedAt || null,
+    },
+  };
+}
+
 function normalizeOrg(data) {
   const normalized = normalizeTransfers(data);
   normalized.clients = normalized.clients.map(normalizeClient);
@@ -119,11 +157,366 @@ function normalizeTransfers(data) {
   return normalized;
 }
 
+function boolInt(value) {
+  return value ? 1 : 0;
+}
+
+function rowSignature(params) {
+  return JSON.stringify(params);
+}
+
+const SQLITE_TABLE_SPECS = [
+  {
+    key: "departments",
+    table: "departments",
+    upsertSql: `
+      INSERT INTO departments (id, name, parent_id, status, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        parent_id = excluded.parent_id,
+        status = excluded.status,
+        sort_order = excluded.sort_order,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at
+    `,
+    toParams: (item) => [
+      item.id,
+      item.name,
+      item.parentId || null,
+      item.status || "active",
+      Number(item.sortOrder || 0),
+      item.createdAt,
+      item.updatedAt,
+    ],
+  },
+  {
+    key: "employees",
+    table: "employees",
+    upsertSql: `
+      INSERT INTO employees (id, name, employee_no, department_id, title, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        employee_no = excluded.employee_no,
+        department_id = excluded.department_id,
+        title = excluded.title,
+        status = excluded.status,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at
+    `,
+    toParams: (item) => [
+      item.id,
+      item.name,
+      item.employeeNo || null,
+      item.departmentId || null,
+      item.title || null,
+      item.status || "active",
+      item.createdAt,
+      item.updatedAt,
+    ],
+  },
+  {
+    key: "transferRules",
+    table: "transfer_rules",
+    normalize: normalizeTransferRule,
+    upsertSql: `
+      INSERT INTO transfer_rules (
+        id, name, source_department_id, target_department_id, require_approval,
+        allow_backup, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        source_department_id = excluded.source_department_id,
+        target_department_id = excluded.target_department_id,
+        require_approval = excluded.require_approval,
+        allow_backup = excluded.allow_backup,
+        status = excluded.status,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at
+    `,
+    toParams: (item) => [
+      item.id,
+      item.name,
+      item.sourceDepartmentId || null,
+      item.targetDepartmentId || null,
+      boolInt(item.requireApproval),
+      boolInt(item.allowBackup),
+      item.status,
+      item.createdAt,
+      item.updatedAt,
+    ],
+  },
+  {
+    key: "installCodes",
+    table: "install_codes",
+    upsertSql: `
+      INSERT INTO install_codes (
+        id, label, code_hash, max_uses, used_count, status, expires_at,
+        allowed_macs, allowed_ips, bind_to_first_mac, bind_to_first_ip,
+        bound_mac, bound_ip, default_allow_when_unmanaged, created_at, client_ids
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        label = excluded.label,
+        code_hash = excluded.code_hash,
+        max_uses = excluded.max_uses,
+        used_count = excluded.used_count,
+        status = excluded.status,
+        expires_at = excluded.expires_at,
+        allowed_macs = excluded.allowed_macs,
+        allowed_ips = excluded.allowed_ips,
+        bind_to_first_mac = excluded.bind_to_first_mac,
+        bind_to_first_ip = excluded.bind_to_first_ip,
+        bound_mac = excluded.bound_mac,
+        bound_ip = excluded.bound_ip,
+        default_allow_when_unmanaged = excluded.default_allow_when_unmanaged,
+        created_at = excluded.created_at,
+        client_ids = excluded.client_ids
+    `,
+    toParams: (item) => [
+      item.id,
+      item.label,
+      item.codeHash,
+      item.maxUses,
+      item.usedCount,
+      item.status,
+      item.expiresAt || null,
+      JSON.stringify(item.allowedMacs || []),
+      JSON.stringify(item.allowedIps || []),
+      boolInt(item.bindToFirstMac),
+      boolInt(item.bindToFirstIp),
+      item.boundMac || null,
+      item.boundIp || null,
+      boolInt(item.defaultAllowWhenUnmanaged),
+      item.createdAt,
+      JSON.stringify(item.clientIds || []),
+    ],
+  },
+  {
+    key: "clients",
+    table: "clients",
+    normalize: normalizeClient,
+    upsertSql: `
+      INSERT INTO clients (
+        id, display_name, mac_address, ip_address, platform, install_code_id,
+        secret_hash, status, managed, allow_when_unmanaged, must_match_mac,
+        must_match_ip, employee_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        display_name = excluded.display_name,
+        mac_address = excluded.mac_address,
+        ip_address = excluded.ip_address,
+        platform = excluded.platform,
+        install_code_id = excluded.install_code_id,
+        secret_hash = excluded.secret_hash,
+        status = excluded.status,
+        managed = excluded.managed,
+        allow_when_unmanaged = excluded.allow_when_unmanaged,
+        must_match_mac = excluded.must_match_mac,
+        must_match_ip = excluded.must_match_ip,
+        employee_id = excluded.employee_id,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at
+    `,
+    toParams: (item) => [
+      item.id,
+      item.displayName,
+      item.macAddress || null,
+      item.ipAddress || null,
+      item.platform || null,
+      item.installCodeId || null,
+      item.secretHash,
+      item.status,
+      boolInt(item.managed),
+      boolInt(item.allowWhenUnmanaged),
+      boolInt(item.mustMatchMac),
+      boolInt(item.mustMatchIp),
+      item.employeeId || null,
+      item.createdAt,
+      item.updatedAt,
+    ],
+  },
+  {
+    key: "transfers",
+    table: "transfers",
+    normalize: normalizeTransfer,
+    upsertSql: `
+      INSERT INTO transfers (
+        id, sender_id, sender_name, receiver_id, receiver_name, file_name, safe_name,
+        mime_type, size, chunk_size, total_chunks, uploaded_chunks, progress, status,
+        controls, file_path, chunks_dir, sha256, created_at, completed_at, approved_at,
+        rejected_at, reject_reason, retain_on_server, delivery_status, server_file_status,
+        delivered_at, purged_at, purge_reason, upload_note, sender_employee_id, sender_employee_name,
+        receiver_employee_id, receiver_employee_name, transfer_rule_id, transfer_rule_name,
+        approval_required, backup_allowed
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        sender_id = excluded.sender_id,
+        sender_name = excluded.sender_name,
+        receiver_id = excluded.receiver_id,
+        receiver_name = excluded.receiver_name,
+        file_name = excluded.file_name,
+        safe_name = excluded.safe_name,
+        mime_type = excluded.mime_type,
+        size = excluded.size,
+        chunk_size = excluded.chunk_size,
+        total_chunks = excluded.total_chunks,
+        uploaded_chunks = excluded.uploaded_chunks,
+        progress = excluded.progress,
+        status = excluded.status,
+        controls = excluded.controls,
+        file_path = excluded.file_path,
+        chunks_dir = excluded.chunks_dir,
+        sha256 = excluded.sha256,
+        created_at = excluded.created_at,
+        completed_at = excluded.completed_at,
+        approved_at = excluded.approved_at,
+        rejected_at = excluded.rejected_at,
+        reject_reason = excluded.reject_reason,
+        retain_on_server = excluded.retain_on_server,
+        delivery_status = excluded.delivery_status,
+        server_file_status = excluded.server_file_status,
+        delivered_at = excluded.delivered_at,
+        purged_at = excluded.purged_at,
+        purge_reason = excluded.purge_reason,
+        upload_note = excluded.upload_note,
+        sender_employee_id = excluded.sender_employee_id,
+        sender_employee_name = excluded.sender_employee_name,
+        receiver_employee_id = excluded.receiver_employee_id,
+        receiver_employee_name = excluded.receiver_employee_name,
+        transfer_rule_id = excluded.transfer_rule_id,
+        transfer_rule_name = excluded.transfer_rule_name,
+        approval_required = excluded.approval_required,
+        backup_allowed = excluded.backup_allowed
+    `,
+    toParams: (item) => [
+      item.id,
+      item.senderId,
+      item.senderName,
+      item.receiverId,
+      item.receiverName,
+      item.fileName,
+      item.safeName,
+      item.mimeType,
+      item.size,
+      item.chunkSize,
+      item.totalChunks,
+      JSON.stringify(item.uploadedChunks || []),
+      item.progress,
+      item.status,
+      JSON.stringify(item.controls || {}),
+      item.filePath || null,
+      item.chunksDir || null,
+      item.sha256 || null,
+      item.createdAt,
+      item.completedAt || null,
+      item.approvedAt || null,
+      item.rejectedAt || null,
+      item.rejectReason || "",
+      boolInt(item.retainOnServer),
+      item.deliveryStatus,
+      item.serverFileStatus,
+      item.deliveredAt || null,
+      item.purgedAt || null,
+      item.purgeReason || "",
+      item.uploadNote || "",
+      item.senderEmployeeId || null,
+      item.senderEmployeeName || "",
+      item.receiverEmployeeId || null,
+      item.receiverEmployeeName || "",
+      item.transferRuleId || null,
+      item.transferRuleName || "",
+      boolInt(item.approvalRequired),
+      boolInt(item.backupAllowed),
+    ],
+  },
+  {
+    key: "logs",
+    table: "logs",
+    getItems: (data) => data.logs.slice(0, 1000),
+    upsertSql: `
+      INSERT INTO logs (id, at, actor_type, actor_id, action, details)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        at = excluded.at,
+        actor_type = excluded.actor_type,
+        actor_id = excluded.actor_id,
+        action = excluded.action,
+        details = excluded.details
+    `,
+    toParams: (item) => [
+      item.id,
+      item.at,
+      item.actorType,
+      item.actorId,
+      item.action,
+      JSON.stringify(item.details || {}),
+    ],
+  },
+  {
+    key: "adminUsers",
+    table: "admin_users",
+    upsertSql: `
+      INSERT INTO admin_users (
+        id, username, display_name, role, permissions, password_salt,
+        password_hash, status, created_at, updated_at, last_login_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        username = excluded.username,
+        display_name = excluded.display_name,
+        role = excluded.role,
+        permissions = excluded.permissions,
+        password_salt = excluded.password_salt,
+        password_hash = excluded.password_hash,
+        status = excluded.status,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        last_login_at = excluded.last_login_at
+    `,
+    toParams: (item) => [
+      item.id,
+      item.username,
+      item.displayName,
+      item.role,
+      JSON.stringify(item.permissions || []),
+      item.passwordSalt,
+      item.passwordHash,
+      item.status,
+      item.createdAt,
+      item.updatedAt,
+      item.lastLoginAt || null,
+    ],
+  },
+  {
+    key: "adminSessions",
+    table: "admin_sessions",
+    upsertSql: `
+      INSERT INTO admin_sessions (id, user_id, token_hash, created_at, expires_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        user_id = excluded.user_id,
+        token_hash = excluded.token_hash,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at,
+        last_seen_at = excluded.last_seen_at
+    `,
+    toParams: (item) => [
+      item.id,
+      item.userId,
+      item.tokenHash,
+      item.createdAt,
+      item.expiresAt,
+      item.lastSeenAt,
+    ],
+  },
+];
+
 class JsonStore {
   constructor(dataDir) {
     this.dataDir = dataDir;
     this.dbPath = path.join(dataDir, "db.json");
     this.queue = Promise.resolve();
+    this.consecutiveMutateWriteFailures = 0;
     fs.mkdirSync(dataDir, { recursive: true });
     this.data = this.load();
   }
@@ -161,8 +554,16 @@ class JsonStore {
   mutate(fn) {
     const task = this.queue.then(() => {
       const result = fn(this.data);
-      this.data = normalizeOrg(this.data);
-      this.write(this.data);
+      const normalized = normalizeOrg(this.data);
+      try {
+        this.write(normalized);
+      } catch (error) {
+        this.consecutiveMutateWriteFailures += 1;
+        logMutateWriteFailure("JsonStore", this.consecutiveMutateWriteFailures, error);
+        throw error;
+      }
+      this.consecutiveMutateWriteFailures = 0;
+      this.data = normalized;
       return result;
     });
     this.queue = task.catch(() => {});
@@ -180,6 +581,7 @@ class SqliteStore {
     this.dataDir = dataDir;
     this.dbPath = options.dbPath || path.join(dataDir, "file-assistant.sqlite");
     this.queue = Promise.resolve();
+    this.consecutiveMutateWriteFailures = 0;
     fs.mkdirSync(dataDir, { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
     this.initSchema();
@@ -529,7 +931,76 @@ class SqliteStore {
       lastSeenAt: row.last_seen_at,
     }));
 
-    return normalizeOrg({ departments, employees, transferRules, installCodes, clients, transfers, logs, adminUsers, adminSessions });
+    const settingsRow = this.db.prepare("SELECT value FROM meta WHERE key = 'settings'").get();
+    const settings = json(settingsRow?.value, createDefaultSettings());
+
+    return normalizeOrg({ settings, departments, employees, transferRules, installCodes, clients, transfers, logs, adminUsers, adminSessions });
+  }
+
+  syncTable(spec, beforeData, afterData) {
+    const normalizeItem = spec.normalize || ((item) => item);
+    const getItems = spec.getItems || ((data) => data[spec.key] || []);
+    const beforeRows = new Map();
+    const afterRows = new Map();
+
+    for (const rawItem of getItems(beforeData)) {
+      const item = normalizeItem(rawItem);
+      beforeRows.set(item.id, rowSignature(spec.toParams(item)));
+    }
+    for (const rawItem of getItems(afterData)) {
+      const item = normalizeItem(rawItem);
+      afterRows.set(item.id, {
+        signature: rowSignature(spec.toParams(item)),
+        params: spec.toParams(item),
+      });
+    }
+
+    const deleteStmt = this.db.prepare(`DELETE FROM ${spec.table} WHERE id = ?`);
+    for (const id of beforeRows.keys()) {
+      if (!afterRows.has(id)) {
+        deleteStmt.run(id);
+      }
+    }
+
+    const upsertStmt = this.db.prepare(spec.upsertSql);
+    for (const [id, row] of afterRows.entries()) {
+      if (beforeRows.get(id) !== row.signature) {
+        upsertStmt.run(...row.params);
+      }
+    }
+  }
+
+  pruneLogRows() {
+    this.db.prepare(`
+      DELETE FROM logs
+      WHERE id NOT IN (
+        SELECT id FROM logs ORDER BY at DESC LIMIT 1000
+      )
+    `).run();
+  }
+
+  applyChanges(beforeData, nextData) {
+    const before = normalizeOrg(beforeData);
+    const after = normalizeOrg(nextData);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const beforeSettings = JSON.stringify(before.settings);
+      const afterSettings = JSON.stringify(after.settings);
+      if (beforeSettings !== afterSettings) {
+        this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('settings', ?)").run(afterSettings);
+      }
+
+      for (const spec of SQLITE_TABLE_SPECS) {
+        this.syncTable(spec, before, after);
+      }
+      this.pruneLogRows();
+
+      this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3')").run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   replaceAll(data) {
@@ -547,6 +1018,7 @@ class SqliteStore {
         DELETE FROM departments;
         DELETE FROM install_codes;
       `);
+      this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('settings', ?)").run(JSON.stringify(normalized.settings));
 
       const insertDepartment = this.db.prepare(`
         INSERT INTO departments (id, name, parent_id, status, sort_order, created_at, updated_at)
@@ -782,9 +1254,17 @@ class SqliteStore {
 
   mutate(fn) {
     const task = this.queue.then(() => {
-      const data = this.snapshot();
+      const before = this.snapshot();
+      const data = clone(before);
       const result = fn(data);
-      this.replaceAll(data);
+      try {
+        this.applyChanges(before, data);
+      } catch (error) {
+        this.consecutiveMutateWriteFailures += 1;
+        logMutateWriteFailure("SqliteStore", this.consecutiveMutateWriteFailures, error);
+        throw error;
+      }
+      this.consecutiveMutateWriteFailures = 0;
       return result;
     });
     this.queue = task.catch(() => {});

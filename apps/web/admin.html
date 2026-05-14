@@ -134,6 +134,71 @@
           <section class="panel">
             <div class="panel-head">
               <div>
+                <h2>专属客户端安装包</h2>
+                <p class="muted">生成已内置服务端地址和部署令牌的客户端安装包，员工安装后自动注册。</p>
+              </div>
+            </div>
+            <form id="clientPackageForm">
+              <div class="field">
+                <label for="packageServerUrl">服务端地址</label>
+                <input id="packageServerUrl" placeholder="默认使用当前控制台地址" />
+              </div>
+              <div class="field">
+                <label for="packageLabel">用途名称</label>
+                <input id="packageLabel" value="专属客户端安装包" />
+              </div>
+              <div class="field compact-fields">
+                <div>
+                  <label for="packageMaxUses">可安装设备数</label>
+                  <input id="packageMaxUses" type="number" min="1" value="100" />
+                </div>
+                <div>
+                  <label for="packageValidDays">有效天数</label>
+                  <input id="packageValidDays" type="number" min="1" value="30" />
+                </div>
+              </div>
+              <div class="checks">
+                <label class="check"><input id="packageAllowUnmanaged" type="checkbox" checked /> <span>脱管后可继续使用</span></label>
+              </div>
+              <div class="actions" style="margin-top: 12px">
+                <button class="primary" type="submit">生成专属安装包</button>
+              </div>
+            </form>
+            <div id="clientPackageResult" class="notice" hidden></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>免码注册</h2>
+                <p class="muted">临时允许客户端只填写服务端地址完成注册。</p>
+              </div>
+            </div>
+            <form id="openRegistrationForm">
+              <div class="checks">
+                <label class="check"><input id="openRegistrationEnabled" type="checkbox" /> <span>允许免码注册</span></label>
+              </div>
+              <div class="field">
+                <label for="openRegistrationDuration">开启时长（分钟）</label>
+                <input id="openRegistrationDuration" type="number" min="1" value="60" />
+              </div>
+              <div class="field">
+                <label for="openRegistrationMaxUses">最多注册设备数</label>
+                <input id="openRegistrationMaxUses" type="number" min="1" value="50" />
+              </div>
+              <div class="checks">
+                <label class="check"><input id="openRegistrationAllowUnmanaged" type="checkbox" checked /> <span>脱管后可继续使用</span></label>
+              </div>
+              <p id="openRegistrationStatus" class="muted">免码注册未开启。</p>
+              <div class="actions" style="margin-top: 12px">
+                <button class="primary" type="submit">保存免码注册设置</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
                 <h2>批量改名</h2>
                 <p class="muted">按 Mac、IP、平台或状态匹配，只修改传输工具内显示名称。</p>
               </div>
@@ -186,8 +251,8 @@
             <div class="panel-head">
               <h2>客户端</h2>
             </div>
-            <div class="table-wrap">
-              <table>
+            <div class="table-wrap client-table-wrap">
+              <table class="clients-table">
                 <thead>
                   <tr>
                     <th>名称</th>
@@ -432,5 +497,27 @@ audit.view</textarea>
         </div>
       </section>
     </main>
+
+    <div class="modal-backdrop" id="clientBindDialog" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="clientBindTitle">
+        <div class="modal-head">
+          <div>
+            <h2 id="clientBindTitle">绑定客户端人员</h2>
+            <p class="muted" id="clientBindClientName"></p>
+          </div>
+          <button type="button" class="ghost icon-button" id="clientBindCloseBtn" aria-label="关闭">×</button>
+        </div>
+        <div class="field">
+          <label for="clientBindEmployee">选择人员</label>
+          <select id="clientBindEmployee"></select>
+          <p class="muted" id="clientBindEmpty" hidden>当前没有可绑定的启用人员，请先在“人员”区域新增并启用人员。</p>
+        </div>
+        <div class="actions modal-actions">
+          <button type="button" id="clientBindUnbindBtn">解除绑定</button>
+          <button type="button" id="clientBindCancelBtn">取消</button>
+          <button type="button" class="primary" id="clientBindSaveBtn">保存绑定</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

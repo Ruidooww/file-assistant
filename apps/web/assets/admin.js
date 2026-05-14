@@ -5,10 +5,12 @@ const state = {
   employees: [],
   transferRules: [],
   installCodes: [],
+  openRegistration: null,
   clients: [],
   transfers: [],
   logs: [],
   users: [],
+  bindingClientId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -24,7 +26,6 @@ function escapeHtml(value) {
 function statusPill(status) {
   const kind = {
     active: "ok",
-    approved: "ok",
     ready_to_deliver: "ok",
     delivered: "ok",
     retained: "ok",
@@ -38,7 +39,6 @@ function statusPill(status) {
     purged: "danger",
   }[status] || "";
   const label = {
-    approved: "已放行",
     ready_to_deliver: "等待接收",
     pending_approval: "等待中转确认",
     uploading: "上传中",
@@ -114,8 +114,44 @@ function getDeploymentServerUrl() {
   return $("deploymentServerUrl").value.trim() || window.location.origin;
 }
 
+function getPackageServerUrl() {
+  return $("packageServerUrl").value.trim() || window.location.origin;
+}
+
 function buildDeploymentCommand(code) {
   return `FileAssistantClient.exe --server ${getDeploymentServerUrl()} --deploy-token ${code} --auto-register`;
+}
+
+function findDepartment(id) {
+  return state.departments.find((department) => department.id === id) || null;
+}
+
+function findEmployee(id) {
+  return state.employees.find((employee) => employee.id === id) || null;
+}
+
+function employeeLabel(employee) {
+  if (!employee) return "未绑定";
+  const department = findDepartment(employee.departmentId);
+  return `${employee.name}${department ? ` / ${department.name}` : ""}`;
+}
+
+function renderOpenRegistration() {
+  const open = state.openRegistration || {};
+  $("openRegistrationEnabled").checked = Boolean(open.enabled);
+  $("openRegistrationMaxUses").value = open.maxUses || 50;
+  $("openRegistrationAllowUnmanaged").checked = open.defaultAllowWhenUnmanaged !== false;
+  const expiresAt = open.expiresAt ? new Date(open.expiresAt) : null;
+  const active = Boolean(open.active);
+  let status = "免码注册未开启。";
+  if (active) {
+    status = `免码注册已开启，到期时间：${expiresAt?.toLocaleString() || "未设置"}，剩余可注册 ${open.remainingUses ?? 0} 台。`;
+  } else if (open.enabled && Number(open.remainingUses || 0) <= 0) {
+    status = "免码注册名额已用完。";
+  } else if (open.enabled) {
+    status = "免码注册已过期。";
+  }
+  $("openRegistrationStatus").textContent = status;
 }
 
 function renderInstallCodes() {
@@ -142,35 +178,28 @@ function renderInstallCodes() {
 }
 
 function renderClients() {
-  const employeeOptions = [
-    `<option value="">未绑定</option>`,
-    ...state.employees
-      .filter((employee) => employee.status === "active")
-      .map((employee) => {
-        const department = state.departments.find((item) => item.id === employee.departmentId);
-        const label = `${employee.name}${department ? ` / ${department.name}` : ""}`;
-        return `<option value="${escapeHtml(employee.id)}">${escapeHtml(label)}</option>`;
-      }),
-  ].join("");
   $("clientsBody").innerHTML = state.clients
     .map((client) => {
       const managed = client.managed ? "受管" : "脱管";
       const allowed = client.allowWhenUnmanaged ? "脱管可用" : "脱管禁用";
       const nextStatus = client.status === "active" ? "disabled" : "active";
       const nextManaged = client.managed ? false : true;
+      const boundEmployee = findEmployee(client.employeeId);
+      const bindingText = boundEmployee ? employeeLabel(boundEmployee) : "未绑定";
+      const bindingClass = boundEmployee ? "ok" : "warn";
       return `<tr>
         <td>
           <strong>${escapeHtml(client.displayName)}</strong><br />
           <span class="muted">${escapeHtml(client.id)}</span>
         </td>
         <td>${escapeHtml(client.platform || "-")}</td>
-        <td>
-          <select data-client-employee-select="${escapeHtml(client.id)}">${employeeOptions}</select>
-          <button data-client-employee="${escapeHtml(client.id)}">绑定</button>
+        <td class="client-bind-cell">
+          <span class="pill ${bindingClass}">${escapeHtml(bindingText)}</span>
+          <button type="button" data-client-bind-open="${escapeHtml(client.id)}">${boundEmployee ? "更换人员" : "绑定人员"}</button>
         </td>
         <td>${escapeHtml(client.macAddress || "-")}<br />${escapeHtml(client.ipAddress || "-")}</td>
         <td>${statusPill(client.status)} <span class="pill">${managed}</span> <span class="pill">${allowed}</span></td>
-        <td class="actions">
+        <td class="actions client-actions">
           <button data-client-status="${escapeHtml(client.id)}" data-status="${nextStatus}">${nextStatus === "active" ? "启用" : "停用"}</button>
           <button data-client-managed="${escapeHtml(client.id)}" data-managed="${nextManaged}">${nextManaged ? "纳管" : "脱管"}</button>
           <button data-client-policy="${escapeHtml(client.id)}" data-allow="${!client.allowWhenUnmanaged}">${client.allowWhenUnmanaged ? "脱管禁用" : "脱管可用"}</button>
@@ -178,10 +207,6 @@ function renderClients() {
       </tr>`;
     })
     .join("");
-  for (const client of state.clients) {
-    const select = document.querySelector(`[data-client-employee-select="${CSS.escape(client.id)}"]`);
-    if (select) select.value = client.employeeId || "";
-  }
 }
 
 function renderDepartments() {
@@ -285,7 +310,7 @@ function renderTransfers() {
           <button ${hasServerFile ? "" : "disabled"} data-admin-file="${escapeHtml(transfer.id)}" data-mode="download">下载</button>
           ${retainAction}
           <button ${hasServerFile ? "" : "disabled"} class="danger" data-purge="${escapeHtml(transfer.id)}">清除</button>
-          <button ${canReview ? "" : "disabled"} data-transfer="${escapeHtml(transfer.id)}" data-status="approved">放行</button>
+          <button ${canReview ? "" : "disabled"} data-transfer="${escapeHtml(transfer.id)}" data-status="ready_to_deliver">放行</button>
           <button ${canReview ? "" : "disabled"} class="danger" data-transfer="${escapeHtml(transfer.id)}" data-status="rejected">驳回</button>
         </td>
       </tr>`;
@@ -326,6 +351,10 @@ function actionLabel(action) {
     "transfer.retention_updated": "备份状态更新",
     "transfer.purged": "服务器文件清除",
     "client.registered": "客户端注册",
+    "open_registration.updated": "免码注册设置更新",
+    "client_package.created": "专属客户端安装包生成",
+    "install_code.created": "安装码创建",
+    "install_code.used": "安装码使用",
     "admin.login": "管理员登录",
     "admin.logout": "管理员退出",
   }[action] || action;
@@ -347,12 +376,13 @@ async function refreshAll() {
     showApp(false);
     return;
   }
-  const [summary, departments, employees, transferRules, installCodes, clients, transfers, logs, users] = await Promise.all([
+  const [summary, departments, employees, transferRules, installCodes, openRegistration, clients, transfers, logs, users] = await Promise.all([
     api("/api/admin/summary"),
     api("/api/admin/departments"),
     api("/api/admin/employees"),
     api("/api/admin/transfer-rules"),
     api("/api/admin/install-codes"),
+    api("/api/admin/open-registration"),
     api("/api/admin/clients"),
     api("/api/admin/transfers"),
     api("/api/admin/logs"),
@@ -363,6 +393,7 @@ async function refreshAll() {
   state.employees = employees;
   state.transferRules = transferRules;
   state.installCodes = installCodes;
+  state.openRegistration = openRegistration;
   state.clients = clients;
   state.transfers = transfers;
   state.logs = logs;
@@ -373,6 +404,7 @@ async function refreshAll() {
   renderTransferRules();
   renderEmployees();
   renderInstallCodes();
+  renderOpenRegistration();
   renderClients();
   renderTransfers();
   renderUsers();
@@ -465,6 +497,64 @@ async function createInstallCode(event) {
     <div class="actions" style="margin-top: 8px">
       <button type="button" data-copy="${escapeHtml(command)}">复制部署命令</button>
     </div>`;
+  await refreshAll();
+}
+
+async function createClientPackage(event) {
+  event.preventDefault();
+  const created = await api("/api/admin/client-packages", {
+    method: "POST",
+    body: JSON.stringify({
+      serverUrl: getPackageServerUrl(),
+      label: $("packageLabel").value.trim() || "专属客户端安装包",
+      maxUses: Number($("packageMaxUses").value || 100),
+      validDays: Number($("packageValidDays").value || 30),
+      defaultAllowWhenUnmanaged: $("packageAllowUnmanaged").checked,
+    }),
+  });
+  $("clientPackageResult").hidden = false;
+  $("clientPackageResult").innerHTML = `
+    <strong>专属客户端安装包已生成：</strong>
+    <div class="code-box">${escapeHtml(created.fileName)}</div>
+    <p class="muted" style="margin-top: 10px">内置服务地址：${escapeHtml(created.serverUrl)}。部署令牌有效期至 ${escapeHtml(new Date(created.expiresAt).toLocaleString())}，最多可注册 ${escapeHtml(created.maxUses)} 台。</p>
+    <p class="muted" style="margin-top: 6px">该安装包内含部署令牌，请勿公开传播；需要停止下发时，可在安装码列表停用对应令牌。</p>
+    <div class="actions" style="margin-top: 8px">
+      <button type="button" data-package-download="${escapeHtml(created.downloadUrl)}" data-file-name="${escapeHtml(created.fileName)}">下载专属安装包</button>
+    </div>`;
+  await refreshAll();
+}
+
+async function downloadClientPackage(downloadUrl, fileName) {
+  const res = await fetch(downloadUrl, {
+    headers: { Authorization: `Bearer ${state.session?.token || ""}` },
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || "无法下载专属安装包");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName || "FileAssistantClientSetup.exe";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+async function saveOpenRegistration(event) {
+  event.preventDefault();
+  state.openRegistration = await api("/api/admin/open-registration", {
+    method: "PATCH",
+    body: JSON.stringify({
+      enabled: $("openRegistrationEnabled").checked,
+      durationMinutes: Number($("openRegistrationDuration").value || 60),
+      maxUses: Number($("openRegistrationMaxUses").value || 50),
+      defaultAllowWhenUnmanaged: $("openRegistrationAllowUnmanaged").checked,
+    }),
+  });
+  renderOpenRegistration();
   await refreshAll();
 }
 
@@ -598,6 +688,45 @@ async function patchClient(id, payload) {
   await refreshAll();
 }
 
+function openClientBinding(clientId) {
+  const client = state.clients.find((item) => item.id === clientId);
+  if (!client) return;
+
+  state.bindingClientId = clientId;
+  const activeEmployees = state.employees.filter((employee) => employee.status === "active");
+  $("clientBindClientName").textContent = `${client.displayName} / ${client.id}`;
+  $("clientBindEmployee").innerHTML = [
+    `<option value="">未绑定</option>`,
+    ...activeEmployees.map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employeeLabel(employee))}</option>`),
+  ].join("");
+  $("clientBindEmployee").value = client.employeeId || "";
+  $("clientBindEmpty").hidden = activeEmployees.length > 0;
+  $("clientBindSaveBtn").disabled = activeEmployees.length === 0;
+  $("clientBindUnbindBtn").disabled = !client.employeeId;
+  $("clientBindDialog").hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeClientBinding() {
+  state.bindingClientId = null;
+  $("clientBindDialog").hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+async function saveClientBinding() {
+  if (!state.bindingClientId) return;
+  await patchClient(state.bindingClientId, {
+    employeeId: $("clientBindEmployee").value || null,
+  });
+  closeClientBinding();
+}
+
+async function unbindClientEmployee() {
+  if (!state.bindingClientId) return;
+  await patchClient(state.bindingClientId, { employeeId: null });
+  closeClientBinding();
+}
+
 async function patchAdminUser(id, payload) {
   await api(`/api/admin/users/${id}`, {
     method: "PATCH",
@@ -658,6 +787,7 @@ async function openAdminFile(id, mode) {
 
 function wireEvents() {
   $("deploymentServerUrl").placeholder = window.location.origin;
+  $("packageServerUrl").placeholder = window.location.origin;
   $("deploymentMode").addEventListener("change", applyDeploymentModeDefaults);
   $("setupForm").addEventListener("submit", (event) => setupInitialAdmin(event).catch((error) => alert(error.message)));
   $("loginForm").addEventListener("submit", (event) => login(event).catch((error) => alert(error.message)));
@@ -670,8 +800,20 @@ function wireEvents() {
   $("employeeForm").addEventListener("submit", (event) => createEmployee(event).catch((error) => alert(error.message)));
   $("ruleForm").addEventListener("submit", (event) => createTransferRule(event).catch((error) => alert(error.message)));
   $("codeForm").addEventListener("submit", (event) => createInstallCode(event).catch((error) => alert(error.message)));
+  $("clientPackageForm").addEventListener("submit", (event) => createClientPackage(event).catch((error) => alert(error.message)));
+  $("openRegistrationForm").addEventListener("submit", (event) => saveOpenRegistration(event).catch((error) => alert(error.message)));
   $("renameForm").addEventListener("submit", (event) => bulkRename(event).catch((error) => alert(error.message)));
   $("userForm").addEventListener("submit", (event) => createAdminUser(event).catch((error) => alert(error.message)));
+  $("clientBindCloseBtn").addEventListener("click", closeClientBinding);
+  $("clientBindCancelBtn").addEventListener("click", closeClientBinding);
+  $("clientBindSaveBtn").addEventListener("click", () => saveClientBinding().catch((error) => alert(error.message)));
+  $("clientBindUnbindBtn").addEventListener("click", () => unbindClientEmployee().catch((error) => alert(error.message)));
+  $("clientBindDialog").addEventListener("click", (event) => {
+    if (event.target === $("clientBindDialog")) closeClientBinding();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("clientBindDialog").hidden) closeClientBinding();
+  });
   document.body.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
@@ -679,6 +821,9 @@ function wireEvents() {
       navigator.clipboard?.writeText(target.dataset.copy)
         .then(() => alert("已复制"))
         .catch(() => prompt("复制下面的内容", target.dataset.copy));
+    }
+    if (target.dataset.packageDownload) {
+      downloadClientPackage(target.dataset.packageDownload, target.dataset.fileName).catch((error) => alert(error.message));
     }
     if (target.dataset.codeStatus) {
       patchInstallCode(target.dataset.codeStatus, { status: target.dataset.status }).catch((error) => alert(error.message));
@@ -692,9 +837,8 @@ function wireEvents() {
     if (target.dataset.clientPolicy) {
       patchClient(target.dataset.clientPolicy, { allowWhenUnmanaged: target.dataset.allow === "true" }).catch((error) => alert(error.message));
     }
-    if (target.dataset.clientEmployee) {
-      const select = document.querySelector(`[data-client-employee-select="${CSS.escape(target.dataset.clientEmployee)}"]`);
-      patchClient(target.dataset.clientEmployee, { employeeId: select?.value || null }).catch((error) => alert(error.message));
+    if (target.dataset.clientBindOpen) {
+      openClientBinding(target.dataset.clientBindOpen);
     }
     if (target.dataset.department) {
       patchDepartment(target.dataset.department, { status: target.dataset.status }).catch((error) => alert(error.message));

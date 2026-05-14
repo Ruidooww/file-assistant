@@ -47,6 +47,10 @@ public static class ClientConfigStore
 
     public static string ConfigPath => Path.Combine(ConfigDirectory, "client.json");
 
+    public static string LogDirectory => Path.Combine(ConfigDirectory, "logs");
+
+    public static string LogPath => Path.Combine(LogDirectory, "client.log");
+
     public static ClientConfig Load()
     {
         var defaults = new ClientConfig();
@@ -89,5 +93,17 @@ public static class ClientConfigStore
     {
         Directory.CreateDirectory(ConfigDirectory);
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, JsonOptions));
+    }
+
+    public static void AppendLog(string line)
+    {
+        try
+        {
+            Directory.CreateDirectory(LogDirectory);
+            File.AppendAllText(LogPath, line + Environment.NewLine);
+        }
+        catch
+        {
+        }
     }
 }

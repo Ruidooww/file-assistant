@@ -46,6 +46,11 @@ public sealed class FileAssistantApiClient : IDisposable
         return SendJsonAsync<RegisterClientResponse>(HttpMethod.Post, "/api/client/auto-register", request, false, cancellationToken);
     }
 
+    public Task<RegisterClientResponse?> OpenRegisterClientAsync(RegisterClientRequest request, CancellationToken cancellationToken = default)
+    {
+        return SendJsonAsync<RegisterClientResponse>(HttpMethod.Post, "/api/client/open-register", request, false, cancellationToken);
+    }
+
     public Task<ClientDto?> GetMeAsync(CancellationToken cancellationToken = default)
     {
         return SendJsonAsync<ClientDto>(HttpMethod.Get, "/api/client/me", null, true, cancellationToken);

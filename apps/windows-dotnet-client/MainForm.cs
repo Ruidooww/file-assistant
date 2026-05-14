@@ -2,6 +2,8 @@ namespace FileAssistant.WinClient;
 
 public sealed class MainForm : Form
 {
+    private const int SwRestore = 9;
+
     private readonly ClientConfig _config;
     private readonly ClientBootstrapOptions _bootstrapOptions;
     private readonly FileAssistantApiClient _apiClient;
@@ -31,6 +33,10 @@ public sealed class MainForm : Form
     private readonly Button _receiveButton = new();
     private readonly System.Windows.Forms.Timer _pollTimer = new();
     private readonly NotifyIcon _notifyIcon = new();
+    private readonly ContextMenuStrip _trayMenu = new();
+    private readonly ToolStripMenuItem _trayStatusItem = new("状态：未连接");
+    private readonly ToolStripMenuItem _trayServerItem = new("服务：-");
+    private readonly ToolStripMenuItem _trayReceiveDirItem = new("接收目录：-");
     private readonly HashSet<string> _knownReadyInboxTransferIds = new(StringComparer.Ordinal);
 
     private ClientDto? _me;
@@ -40,6 +46,9 @@ public sealed class MainForm : Form
     private bool _refreshInProgress;
     private bool _isBusy;
     private bool _useAutoRegisterEndpointForNextRegistration;
+    private bool _useOpenRegistrationEndpointForNextRegistration;
+    private bool _allowExit;
+    private string _connectionStatusText = "未连接";
     private DateTime _lastPollErrorAt = DateTime.MinValue;
 
     public MainForm()
@@ -55,17 +64,17 @@ public sealed class MainForm : Form
         Size = new Size(1120, 820);
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        Icon = LoadAppIcon();
 
         _pollTimer.Interval = 10_000;
-        _notifyIcon.Icon = SystemIcons.Information;
-        _notifyIcon.Text = "File Assistant Client";
-        _notifyIcon.Visible = true;
 
+        ConfigureTrayIcon();
         BuildUi();
         ConfigureControlSizing(this);
         LoadConfigToFields();
         ApplyConfigurationLockState();
         RenderIdentity();
+        SetConnectionStatus(_config.HasCredentials ? "未检测" : "未注册");
         WireEvents();
     }
 
@@ -77,10 +86,56 @@ public sealed class MainForm : Form
             _pollTimer.Dispose();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
+            _trayMenu.Dispose();
             _apiClient.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    private void ConfigureTrayIcon()
+    {
+        _trayStatusItem.Enabled = false;
+        _trayServerItem.Enabled = false;
+        _trayReceiveDirItem.Enabled = false;
+
+        _trayMenu.Items.AddRange(new ToolStripItem[]
+        {
+            _trayStatusItem,
+            _trayServerItem,
+            _trayReceiveDirItem,
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("打开主界面", null, (_, _) => RestoreWindow()),
+            new ToolStripMenuItem("打开接收目录", null, (_, _) => RunUiAction(OpenReceiveDirectory)),
+            new ToolStripMenuItem("打开日志目录", null, (_, _) => RunUiAction(OpenLogDirectory)),
+            new ToolStripMenuItem("重新连接", null, async (_, _) => await RunUiActionAsync(RefreshDataAsync)),
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("退出客户端", null, (_, _) => ExitApplication())
+        });
+
+        _notifyIcon.Icon = Icon ?? SystemIcons.Information;
+        _notifyIcon.Text = "File Assistant Client";
+        _notifyIcon.ContextMenuStrip = _trayMenu;
+        _notifyIcon.Visible = true;
+        _notifyIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                RestoreWindow();
+            }
+        };
+    }
+
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Information;
+        }
+        catch
+        {
+            return SystemIcons.Information;
+        }
     }
 
     private void BuildUi()
@@ -130,7 +185,7 @@ public sealed class MainForm : Form
         grid.Controls.Add(_serverText, 1, 0);
         grid.SetColumnSpan(_serverText, 3);
 
-        AddLabel(grid, "安装码", 4, 0);
+        AddLabel(grid, "安装码（可空）", 4, 0);
         grid.Controls.Add(_installCodeText, 5, 0);
 
         _registerButton.Text = "注册";
@@ -388,13 +443,28 @@ public sealed class MainForm : Form
         _receiveButton.Click += async (_, _) => await RunUiActionAsync(ReceiveSelectedTransferAsync);
         _pollTimer.Tick += async (_, _) => await PollServerAsync();
         _notifyIcon.DoubleClick += (_, _) => RestoreWindow();
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized)
+            {
+                HideToTray();
+            }
+        };
+        FormClosing += HandleFormClosing;
         Shown += async (_, _) =>
         {
-            if (!_config.HasCredentials && _bootstrapOptions.AutoRegister && !string.IsNullOrWhiteSpace(_bootstrapOptions.RegistrationToken))
+            if (!_config.HasCredentials && _bootstrapOptions.AutoRegister)
             {
-                _useAutoRegisterEndpointForNextRegistration = true;
-                await RunUiActionAsync(RegisterClientAsync);
-                _useAutoRegisterEndpointForNextRegistration = false;
+                var hasRegistrationToken = !string.IsNullOrWhiteSpace(_bootstrapOptions.RegistrationToken);
+                var canTryOpenRegistration = !hasRegistrationToken && !string.IsNullOrWhiteSpace(_bootstrapOptions.ServerUrl);
+                if (hasRegistrationToken || canTryOpenRegistration)
+                {
+                    _useAutoRegisterEndpointForNextRegistration = hasRegistrationToken;
+                    _useOpenRegistrationEndpointForNextRegistration = canTryOpenRegistration;
+                    await RunUiActionAsync(RegisterClientAsync);
+                    _useAutoRegisterEndpointForNextRegistration = false;
+                    _useOpenRegistrationEndpointForNextRegistration = false;
+                }
             }
             else if (_config.HasCredentials)
             {
@@ -455,6 +525,7 @@ public sealed class MainForm : Form
         _config.ReceiveDir = _receiveDirText.Text.Trim();
         _serverText.Text = _config.ServerUrl;
         _apiClient.UpdateConfig(_config);
+        UpdateTrayStatus();
     }
 
     private void ApplyConfigurationLockState()
@@ -499,10 +570,7 @@ public sealed class MainForm : Form
             registrationToken = _bootstrapOptions.RegistrationToken.Trim();
         }
 
-        if (string.IsNullOrWhiteSpace(registrationToken))
-        {
-            throw new InvalidOperationException("请输入安装码，或通过部署参数下发部署令牌。");
-        }
+        var useOpenRegistration = _useOpenRegistrationEndpointForNextRegistration || string.IsNullOrWhiteSpace(registrationToken);
 
         if (string.IsNullOrWhiteSpace(_config.DisplayName))
         {
@@ -520,9 +588,19 @@ public sealed class MainForm : Form
             IpAddress = _config.IpAddress,
             Platform = device.Platform
         };
-        var result = _useAutoRegisterEndpointForNextRegistration
-            ? await _apiClient.AutoRegisterClientAsync(request)
-            : await _apiClient.RegisterClientAsync(request);
+        RegisterClientResponse? result;
+        try
+        {
+            result = useOpenRegistration
+                ? await _apiClient.OpenRegisterClientAsync(request)
+                : (_useAutoRegisterEndpointForNextRegistration
+                    ? await _apiClient.AutoRegisterClientAsync(request)
+                    : await _apiClient.RegisterClientAsync(request));
+        }
+        catch (InvalidOperationException ex) when (useOpenRegistration && ex.Message.Contains("Open registration", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("免码注册未开启、已过期或已达到最大注册数量。请在管理端重新开启免码注册，或填写安装码。");
+        }
 
         if (result?.Client is null || string.IsNullOrWhiteSpace(result.ClientSecret))
         {
@@ -539,6 +617,7 @@ public sealed class MainForm : Form
         ClientConfigStore.Save(_config);
         ApplyConfigurationLockState();
         Log("注册成功，凭证已保存，关键配置已锁定。请在管理端绑定人员后刷新。");
+        SetConnectionStatus("已注册");
         await RefreshDataAsync();
     }
 
@@ -549,6 +628,7 @@ public sealed class MainForm : Form
         SetBusy(true, "正在检测服务...");
         var health = await _apiClient.GetHealthAsync();
         Log($"服务连接正常：{health?.At}");
+        SetConnectionStatus("服务连接正常");
 
         if (_config.HasCredentials)
         {
@@ -626,6 +706,7 @@ public sealed class MainForm : Form
         RenderTransfers();
         ApplyConfigurationLockState();
         Log("已清除本机注册凭证，关键配置已解除锁定。");
+        SetConnectionStatus("未注册");
     }
 
     private async Task RefreshDataAsync()
@@ -648,6 +729,7 @@ public sealed class MainForm : Form
             if (!_config.HasCredentials)
             {
                 RenderIdentity();
+                SetConnectionStatus("未注册");
                 if (silent)
                 {
                     return;
@@ -678,6 +760,7 @@ public sealed class MainForm : Form
             RenderTransfers();
             RememberReadyInboxTransfers(_transfers);
             ApplyConfigurationLockState();
+            SetConnectionStatus("已连接");
 
             if (!silent)
             {
@@ -685,6 +768,11 @@ public sealed class MainForm : Form
             }
 
             NotifyNewReadyTransfers(newReadyTransfers);
+        }
+        catch
+        {
+            SetConnectionStatus(_config.HasCredentials ? "连接异常" : "未注册");
+            throw;
         }
         finally
         {
@@ -705,6 +793,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            SetConnectionStatus("连接异常");
             if ((DateTime.Now - _lastPollErrorAt).TotalSeconds >= 60)
             {
                 _lastPollErrorAt = DateTime.Now;
@@ -852,7 +941,7 @@ public sealed class MainForm : Form
             throw new InvalidOperationException("只能接收发给当前客户端的文件。");
         }
 
-        if (transfer.Status is not ("approved" or "ready_to_deliver"))
+        if (transfer.Status is not "ready_to_deliver")
         {
             throw new InvalidOperationException("该文件还没有准备好接收。");
         }
@@ -924,12 +1013,29 @@ public sealed class MainForm : Form
         {
             _meLabel.Text = _config.HasCredentials
                 ? "已保存客户端凭证，关键配置已锁定，尚未完成连接检测。"
-                : "尚未注册。请先在管理端生成安装码，然后注册客户端。";
+                : "尚未注册。填写服务端地址后可直接注册；如未开启免码注册，请填写安装码。";
             return;
         }
 
-        var employeeText = string.IsNullOrWhiteSpace(_me.EmployeeId) ? "未绑定人员" : $"人员ID: {_me.EmployeeId}";
+        var employeeText = FormatBoundEmployee(_me);
         _meLabel.Text = $"客户端：{_me.DisplayName} / {_me.Status} / {employeeText} / 已锁定 / MAC {_me.MacAddress} / IP {_me.IpAddress}";
+    }
+
+    private static string FormatBoundEmployee(ClientDto client)
+    {
+        if (string.IsNullOrWhiteSpace(client.EmployeeId))
+        {
+            return "未绑定人员";
+        }
+
+        if (!string.IsNullOrWhiteSpace(client.EmployeeName))
+        {
+            var department = string.IsNullOrWhiteSpace(client.DepartmentName) ? "" : $" / {client.DepartmentName}";
+            var employeeNo = string.IsNullOrWhiteSpace(client.EmployeeNo) ? "" : $"（{client.EmployeeNo}）";
+            return $"绑定人员：{client.EmployeeName}{employeeNo}{department}";
+        }
+
+        return $"已绑定人员：{client.EmployeeId}";
     }
 
     private void RenderRecipients()
@@ -1008,7 +1114,7 @@ public sealed class MainForm : Form
             return false;
         }
 
-        if (transfer.Status is not ("approved" or "ready_to_deliver"))
+        if (transfer.Status is not "ready_to_deliver")
         {
             return false;
         }
@@ -1066,17 +1172,130 @@ public sealed class MainForm : Form
         }
     }
 
+    private void HandleFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (_allowExit || e.CloseReason != CloseReason.UserClosing)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        HideToTray();
+        _notifyIcon.ShowBalloonTip(3000, "File Assistant Client", "客户端仍在右下角运行。", ToolTipIcon.Info);
+    }
+
+    private void OpenReceiveDirectory()
+    {
+        SyncConfigFromFields();
+        var receiveDir = string.IsNullOrWhiteSpace(_config.ReceiveDir)
+            ? ClientConfigStore.Load().ReceiveDir
+            : _config.ReceiveDir;
+        Directory.CreateDirectory(receiveDir);
+        OpenPath(receiveDir);
+    }
+
+    private void OpenLogDirectory()
+    {
+        Directory.CreateDirectory(ClientConfigStore.LogDirectory);
+        OpenPath(ClientConfigStore.LogDirectory);
+    }
+
+    private static void OpenPath(string path)
+    {
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true
+        });
+    }
+
+    private void ExitApplication()
+    {
+        _allowExit = true;
+        Close();
+    }
+
     private void RestoreWindow()
     {
+        if (InvokeRequired)
+        {
+            BeginInvoke((Action)RestoreWindow);
+            return;
+        }
+
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        ShowInTaskbar = true;
+        Show();
+
         if (WindowState == FormWindowState.Minimized)
         {
             WindowState = FormWindowState.Normal;
         }
 
-        Show();
-        Activate();
+        if (!IsHandleCreated)
+        {
+            CreateControl();
+        }
+
+        _ = ShowWindow(Handle, SwRestore);
         BringToFront();
+        Activate();
+        Focus();
+        _ = SetForegroundWindow(Handle);
+        RefreshWindowSurface();
     }
+
+    private void HideToTray()
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke((Action)HideToTray);
+            return;
+        }
+
+        ShowInTaskbar = false;
+        Hide();
+    }
+
+    private void RefreshWindowSurface()
+    {
+        Invalidate(true);
+        foreach (Control control in Controls)
+        {
+            control.Invalidate(true);
+        }
+        Update();
+        Refresh();
+    }
+
+    private void SetConnectionStatus(string status)
+    {
+        _connectionStatusText = string.IsNullOrWhiteSpace(status) ? "未连接" : status.Trim();
+        UpdateTrayStatus();
+    }
+
+    private void UpdateTrayStatus()
+    {
+        _trayStatusItem.Text = "状态：" + _connectionStatusText;
+        _trayServerItem.Text = "服务：" + (string.IsNullOrWhiteSpace(_config.ServerUrl) ? "-" : _config.ServerUrl);
+        _trayReceiveDirItem.Text = "接收目录：" + (string.IsNullOrWhiteSpace(_config.ReceiveDir) ? "-" : _config.ReceiveDir);
+        _notifyIcon.Text = TrimNotifyText("File Assistant Client - " + _connectionStatusText);
+    }
+
+    private static string TrimNotifyText(string text)
+    {
+        return text.Length <= 63 ? text : text[..60] + "...";
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     private async Task RunUiActionAsync(Func<Task> action)
     {
@@ -1112,8 +1331,24 @@ public sealed class MainForm : Form
 
     private void SetBusy(bool busy, string? message = null)
     {
+        if (InvokeRequired)
+        {
+            BeginInvoke((Action)(() => SetBusy(busy, message)));
+            return;
+        }
+
         _isBusy = busy;
-        UseWaitCursor = busy;
+        Application.UseWaitCursor = busy;
+        SetWaitCursorRecursive(this, busy);
+        Cursor.Current = busy ? Cursors.WaitCursor : Cursors.Default;
+
+        if (!busy)
+        {
+            _transferGrid.UseWaitCursor = false;
+            _transferGrid.Cursor = Cursors.Default;
+            Cursor.Current = Cursors.Default;
+        }
+
         _registerButton.Enabled = !busy && !_config.HasCredentials;
         _detectButton.Enabled = !busy && !_config.HasCredentials;
         _testButton.Enabled = !busy;
@@ -1139,6 +1374,20 @@ public sealed class MainForm : Form
         }
     }
 
+    private static void SetWaitCursorRecursive(Control control, bool busy)
+    {
+        control.UseWaitCursor = busy;
+        if (!busy)
+        {
+            control.Cursor = Cursors.Default;
+        }
+
+        foreach (Control child in control.Controls)
+        {
+            SetWaitCursorRecursive(child, busy);
+        }
+    }
+
     private void SetProgress(int percent, string message)
     {
         _uploadProgress.Value = Math.Max(0, Math.Min(100, percent));
@@ -1148,6 +1397,7 @@ public sealed class MainForm : Form
     private void Log(string message)
     {
         var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        ClientConfigStore.AppendLog($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}");
         if (string.IsNullOrWhiteSpace(_logText.Text))
         {
             _logText.Text = line;
@@ -1191,7 +1441,7 @@ public sealed class MainForm : Form
             "uploading" => "上传中",
             "assembling" => "合并中",
             "pending_approval" => "等待中转确认",
-            "approved" or "ready_to_deliver" => "等待接收",
+            "ready_to_deliver" => "等待接收",
             "delivered" => "已接收",
             "rejected" => "已驳回",
             _ => string.IsNullOrWhiteSpace(status) ? "-" : status

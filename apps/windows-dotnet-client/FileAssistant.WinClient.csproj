@@ -8,6 +8,7 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>..\..\assets\icons\file-assistant-client.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

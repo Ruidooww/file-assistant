@@ -54,7 +54,7 @@ internal sealed class TrayContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = "File Assistant Server",
             ContextMenuStrip = menu,
             Visible = true,
@@ -66,6 +66,18 @@ internal sealed class TrayContext : ApplicationContext
         _timer.Start();
 
         RefreshStatus();
+    }
+
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+        }
+        catch
+        {
+            return SystemIcons.Application;
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -177,6 +189,7 @@ internal sealed record ServerConfig(string ServiceName, string ServerUrl, string
     {
         var configPath = Path.Combine(baseDir, "deploy", "server", "config.ps1");
         var serviceName = "FileAssistantServer";
+        var port = 5177;
         var publicUrl = "http://localhost:5177";
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FileAssistantServer", "logs");
 
@@ -184,6 +197,7 @@ internal sealed record ServerConfig(string ServiceName, string ServerUrl, string
         {
             var text = File.ReadAllText(configPath);
             serviceName = ReadString(text, "ServiceName") ?? serviceName;
+            port = ReadInt(text, "Port") ?? port;
             publicUrl = ReadString(text, "PublicServerUrl") ?? publicUrl;
             logDir = ReadString(text, "LogDir") ?? logDir;
         }
@@ -193,13 +207,32 @@ internal sealed record ServerConfig(string ServiceName, string ServerUrl, string
             logDir = Path.GetFullPath(Path.Combine(baseDir, logDir));
         }
 
-        var serverUrl = NormalizeServerUrl(publicUrl);
+        var serverUrl = NormalizeServerUrl(publicUrl, port);
         return new ServerConfig(serviceName, serverUrl, BuildAdminUrl(serverUrl), logDir);
     }
 
-    private static string NormalizeServerUrl(string publicUrl)
+    private static string NormalizeServerUrl(string publicUrl, int port)
     {
+        port = port is >= 1 and <= 65535 ? port : 5177;
         var normalized = string.IsNullOrWhiteSpace(publicUrl) ? "http://localhost:5177" : publicUrl.Trim();
+        if (!normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = $"http://{normalized}";
+        }
+
+        if (Uri.TryCreate(normalized, UriKind.Absolute, out var uri) && uri.IsDefaultPort)
+        {
+            var schemeDefaultPort =
+                (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && port == 80) ||
+                (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) && port == 443);
+
+            if (!schemeDefaultPort)
+            {
+                normalized = new UriBuilder(uri) { Port = port }.Uri.ToString();
+            }
+        }
+
         return normalized.TrimEnd('/');
     }
 
@@ -212,5 +245,11 @@ internal sealed record ServerConfig(string ServiceName, string ServerUrl, string
     {
         var match = Regex.Match(text, $@"(?m)^\s*{Regex.Escape(key)}\s*=\s*""([^""]*)""");
         return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private static int? ReadInt(string text, string key)
+    {
+        var match = Regex.Match(text, $@"(?m)^\s*{Regex.Escape(key)}\s*=\s*(\d+)");
+        return match.Success && int.TryParse(match.Groups[1].Value, out var value) ? value : null;
     }
 }

@@ -40,11 +40,14 @@ PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\FileAssistantServerService.exe
+SetupIconFile={#SourceRoot}\assets\icons\file-assistant-server.ico
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription=File Assistant Server Setup
 VersionInfoProductName={#AppName}
 SetupLogging=yes
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -70,11 +73,13 @@ Source: "{#TrayBuildDir}\FileAssistantServerTray.exe"; DestDir: "{app}"; Flags: 
 Source: "{#NodeExePath}"; DestDir: "{app}\runtime\node"; DestName: "node.exe"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\apps\server\*"; DestDir: "{app}\apps\server"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: server
 Source: "{#SourceRoot}\apps\web\*"; DestDir: "{app}\apps\web"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: web
+Source: "{#SourceRoot}\deploy\client-installer\FileAssistantClientSetup.exe"; DestDir: "{app}\deploy\client-installer"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\deploy\server\FileAssistant.Deploy.psm1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\deploy\server\start-server.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\deploy\server\stop-server.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: ops
 Source: "{#SourceRoot}\deploy\server\status-server.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: ops
 Source: "{#SourceRoot}\deploy\server\backup-data.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: ops
+Source: "{#SourceRoot}\deploy\server\reset-admin-password.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\deploy\server\install-service-native.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\deploy\server\uninstall-service-native.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: server
 Source: "{#SourceRoot}\deploy\server\config.example.ps1"; DestDir: "{app}\deploy\server"; Flags: ignoreversion; Components: server
@@ -93,8 +98,10 @@ Name: "{code:GetDataRoot}\run"
 Name: "{group}\{cm:ShortcutAdmin}"; Filename: "{code:GetAdminUrl}"; Check: ShouldCreateShortcuts
 Name: "{group}\{cm:ShortcutStatus}"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\deploy\server\status-server.ps1"""; WorkingDir: "{app}"; Check: ShouldCreateOpsShortcuts
 Name: "{group}\{cm:ShortcutBackup}"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\deploy\server\backup-data.ps1"""; WorkingDir: "{app}"; Check: ShouldCreateOpsShortcuts
+Name: "{group}\{cm:ShortcutResetAdminPassword}"; Filename: "powershell.exe"; Parameters: "-NoExit -NoProfile -ExecutionPolicy Bypass -File ""{app}\deploy\server\reset-admin-password.ps1"""; WorkingDir: "{app}"; Check: ShouldCreateShortcuts
 Name: "{group}\{cm:ShortcutDocs}"; Filename: "{app}\docs\DEPLOYMENT.md"; Check: ShouldCreateOpsShortcuts
 Name: "{group}\{cm:ShortcutUninstall}"; Filename: "{uninstallexe}"; Check: ShouldCreateShortcuts
+Name: "{app}\{cm:ShortcutUninstall}"; Filename: "{uninstallexe}"; Check: ShouldCreateShortcuts
 
 [Registry]
 Root: HKLM; Subkey: "Software\FileAssistantServer"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey; Check: ShouldInstallService
@@ -106,6 +113,13 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\FileAssistantServerTray.exe"; Description: "{cm:RunTray}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: ShouldInstallService
+Filename: "{code:GetAdminUrl}"; Description: "{cm:RunAdmin}"; Flags: postinstall shellexec skipifsilent unchecked; Check: ShouldInstallService
+
+[UninstallDelete]
+Type: files; Name: "{app}\deploy\server\config.ps1"
+Type: dirifempty; Name: "{app}\deploy\server"
+Type: dirifempty; Name: "{app}\deploy"
+Type: dirifempty; Name: "{app}"
 
 [CustomMessages]
 english.TypeFull=Full installation
@@ -129,12 +143,16 @@ english.TaskStartService=Start service after installation
 english.ShortcutAdmin=Open Admin Console
 english.ShortcutStatus=Check Server Status
 english.ShortcutBackup=Backup Data
+english.ShortcutResetAdminPassword=Reset Admin Password
 english.ShortcutDocs=Deployment Guide
 english.ShortcutUninstall=Uninstall File Assistant Server
 english.RunTray=Start tray assistant
+english.RunAdmin=Open web admin console
 english.InvalidPort=Port must be between 1 and 65535.
 english.InvalidPassword=Admin password must be at least 8 characters.
 english.InvalidPublicUrl=Server address must start with http:// or https:// when a URL is provided.
+english.PreparingUpgrade=Stopping existing File Assistant service...
+english.UpgradePrepareFailed=Could not stop the existing File Assistant service before replacing files. Close Services/Task Manager windows or reboot, then run the installer again. Details: 
 english.InstallingService=Installing Windows service...
 english.RemovingService=Removing Windows service...
 english.ServiceInstallFailed=Windows service could not be installed. Please close Windows Services/Task Manager windows, reboot if an old service is pending deletion, then run the installer again. Details: 
@@ -149,12 +167,16 @@ chinesesimplified.TaskStartService=安装完成后立即启动服务
 chinesesimplified.ShortcutAdmin=打开管理端
 chinesesimplified.ShortcutStatus=检查服务状态
 chinesesimplified.ShortcutBackup=备份数据
+chinesesimplified.ShortcutResetAdminPassword=重置管理员密码
 chinesesimplified.ShortcutDocs=部署说明
 chinesesimplified.ShortcutUninstall=卸载 File Assistant Server
 chinesesimplified.RunTray=启动右下角托盘助手
+chinesesimplified.RunAdmin=打开 Web 管理端
 chinesesimplified.InvalidPort=端口必须在 1 到 65535 之间。
 chinesesimplified.InvalidPassword=管理员密码至少需要 8 位。
 chinesesimplified.InvalidPublicUrl=填写完整地址时必须以 http:// 或 https:// 开头。
+chinesesimplified.PreparingUpgrade=正在停止已有 File Assistant 服务...
+chinesesimplified.UpgradePrepareFailed=替换文件前无法停止已有 File Assistant 服务。请关闭“服务”管理器/任务管理器窗口，或重启电脑后重新运行安装程序。详细日志：
 chinesesimplified.InstallingService=正在安装 Windows 服务...
 chinesesimplified.RemovingService=正在删除 Windows 服务...
 chinesesimplified.ServiceInstallFailed=Windows 服务安装失败。请关闭“服务”管理器/任务管理器窗口；如果旧服务正在等待删除，请重启电脑后重新运行安装程序。详细日志：
@@ -224,20 +246,94 @@ begin
   Result := (Pos('http://', LowerValue) = 1) or (Pos('https://', LowerValue) = 1);
 end;
 
+function TrimTrailingSlashes(Value: string): string;
+begin
+  Result := Trim(Value);
+  while (Length(Result) > 0) and (Copy(Result, Length(Result), 1) = '/') do
+    Delete(Result, Length(Result), 1);
+end;
+
+function UrlHasExplicitPort(Value: string): Boolean;
+var
+  Normalized: string;
+  SchemePos: Integer;
+  SlashPos: Integer;
+  ClosingBracketPos: Integer;
+  Authority: string;
+  AfterBracket: string;
+begin
+  Normalized := TrimTrailingSlashes(Value);
+  SchemePos := Pos('://', Normalized);
+  if SchemePos > 0 then
+    Authority := Copy(Normalized, SchemePos + 3, Length(Normalized))
+  else
+    Authority := Normalized;
+
+  SlashPos := Pos('/', Authority);
+  if SlashPos > 0 then
+    Authority := Copy(Authority, 1, SlashPos - 1);
+
+  Result := False;
+  if Authority = '' then
+    Exit;
+
+  if Copy(Authority, 1, 1) = '[' then begin
+    ClosingBracketPos := Pos(']', Authority);
+    if ClosingBracketPos > 0 then begin
+      AfterBracket := Copy(Authority, ClosingBracketPos + 1, Length(Authority));
+      Result := Pos(':', AfterBracket) = 1;
+    end;
+  end else begin
+    Result := Pos(':', Authority) > 0;
+  end;
+end;
+
+function EnsureUrlHasPort(Value: string): string;
+var
+  Normalized: string;
+  SchemePos: Integer;
+  AuthorityStart: Integer;
+  SlashRelativePos: Integer;
+  SlashPos: Integer;
+  AuthorityAndPath: string;
+begin
+  Normalized := TrimTrailingSlashes(Value);
+  if UrlHasExplicitPort(Normalized) then begin
+    Result := Normalized;
+    Exit;
+  end;
+
+  SchemePos := Pos('://', Normalized);
+  if SchemePos <= 0 then begin
+    Result := Normalized + ':' + GetPort('');
+    Exit;
+  end;
+
+  AuthorityStart := SchemePos + 3;
+  AuthorityAndPath := Copy(Normalized, AuthorityStart, Length(Normalized));
+  SlashRelativePos := Pos('/', AuthorityAndPath);
+  if SlashRelativePos <= 0 then
+    Result := Normalized + ':' + GetPort('')
+  else begin
+    SlashPos := AuthorityStart + SlashRelativePos - 1;
+    Result := Copy(Normalized, 1, SlashPos - 1) + ':' + GetPort('') + Copy(Normalized, SlashPos, Length(Normalized));
+  end;
+end;
+
 function GetPublicUrl(Param: string): string;
 var
   Value: string;
   Host: string;
 begin
-  Value := Trim(ExpandConstant('{param:PUBLICURL|}'));
+  Value := TrimTrailingSlashes(ExpandConstant('{param:PUBLICURL|}'));
   if Value <> '' then
-    Result := Value
+    Result := EnsureUrlHasPort(Value)
   else begin
-    Host := GetServerHost('');
+    Host := TrimTrailingSlashes(GetServerHost(''));
     if Host = '' then
       Host := 'localhost';
     if HasHttpScheme(Host) then
-      Result := Host
+      Result := EnsureUrlHasPort(Host)
     else if Pos(':', Host) > 0 then
       Result := 'http://' + Host
     else
@@ -454,15 +550,93 @@ begin
   SaveStringToFile(ConfigPath, Content, False);
 end;
 
-function RunPowerShell(ScriptPath: string; ExtraParams: string): Boolean;
+function RunPowerShellInDir(ScriptPath: string; ExtraParams: string; WorkingDir: string): Boolean;
 var
   ResultCode: Integer;
   Params: string;
 begin
   Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '" ' + ExtraParams;
-  Result := Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := Exec('powershell.exe', Params, WorkingDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if Result and (ResultCode <> 0) then
     Result := False;
+end;
+
+function RunPowerShell(ScriptPath: string; ExtraParams: string): Boolean;
+begin
+  Result := RunPowerShellInDir(ScriptPath, ExtraParams, ExpandConstant('{app}'));
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): string;
+var
+  ScriptPath: string;
+  Params: string;
+  Content: string;
+begin
+  Result := '';
+  NeedsRestart := False;
+
+  WizardForm.StatusLabel.Caption := CustomMessage('PreparingUpgrade');
+  ScriptPath := ExpandConstant('{tmp}\fileassistant-prepare-upgrade.ps1');
+  Content :=
+    '[CmdletBinding()]' + #13#10 +
+    'param(' + #13#10 +
+    '  [Parameter(Mandatory = $true)][string]$InstallDir,' + #13#10 +
+    '  [string]$ServiceName = "FileAssistantServer",' + #13#10 +
+    '  [Parameter(Mandatory = $true)][string]$LogDir' + #13#10 +
+    ')' + #13#10 +
+    '$ErrorActionPreference = "Stop"' + #13#10 +
+    '$installDirFull = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)' + #13#10 +
+    '$logDirFull = [System.IO.Path]::GetFullPath($LogDir)' + #13#10 +
+    'New-Item -ItemType Directory -Force -Path $logDirFull | Out-Null' + #13#10 +
+    '$logPath = Join-Path $logDirFull "upgrade-prepare.log"' + #13#10 +
+    'function Write-UpgradeLog { param([string]$Message) Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "[$([DateTimeOffset]::Now.ToString(''O''))] $Message" }' + #13#10 +
+    'function Stop-ProcessByPath { param([string]$Path)' + #13#10 +
+    '  $fullPath = [System.IO.Path]::GetFullPath($Path)' + #13#10 +
+    '  $name = [System.IO.Path]::GetFileName($fullPath)' + #13#10 +
+    '  $processes = Get-CimInstance Win32_Process -Filter "Name=''$name''" -ErrorAction SilentlyContinue' + #13#10 +
+    '  foreach ($process in $processes) {' + #13#10 +
+    '    if ([string]::Equals([string]$process.ExecutablePath, $fullPath, [System.StringComparison]::OrdinalIgnoreCase)) {' + #13#10 +
+    '      Write-UpgradeLog "Terminating leftover process $($process.ProcessId): $($process.ExecutablePath)"' + #13#10 +
+    '      Invoke-CimMethod -InputObject $process -MethodName Terminate | Out-Null' + #13#10 +
+    '    }' + #13#10 +
+    '  }' + #13#10 +
+    '}' + #13#10 +
+    'function Stop-TrayInInstallDir {' + #13#10 +
+    '  $processes = Get-CimInstance Win32_Process -Filter "Name=''FileAssistantServerTray.exe''" -ErrorAction SilentlyContinue' + #13#10 +
+    '  foreach ($process in $processes) {' + #13#10 +
+    '    $path = [string]$process.ExecutablePath' + #13#10 +
+    '    if ([string]::IsNullOrWhiteSpace($path) -or $path.StartsWith($installDirFull, [System.StringComparison]::OrdinalIgnoreCase)) {' + #13#10 +
+    '      Write-UpgradeLog "Terminating tray process $($process.ProcessId): $path"' + #13#10 +
+    '      Invoke-CimMethod -InputObject $process -MethodName Terminate | Out-Null' + #13#10 +
+    '    }' + #13#10 +
+    '  }' + #13#10 +
+    '}' + #13#10 +
+    '$registered = Get-ItemProperty -Path "HKLM:\Software\FileAssistantServer" -Name ServiceName -ErrorAction SilentlyContinue' + #13#10 +
+    'if ($registered.ServiceName) { $ServiceName = [string]$registered.ServiceName }' + #13#10 +
+    'Write-UpgradeLog "Preparing upgrade. InstallDir=$installDirFull ServiceName=$ServiceName"' + #13#10 +
+    'Stop-TrayInInstallDir' + #13#10 +
+    '$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue' + #13#10 +
+    'if ($service) {' + #13#10 +
+    '  Write-UpgradeLog "Existing service status: $($service.Status)"' + #13#10 +
+    '  if ($service.Status -ne "Stopped") {' + #13#10 +
+    '    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue' + #13#10 +
+    '    $deadline = (Get-Date).AddSeconds(45)' + #13#10 +
+    '    do {' + #13#10 +
+    '      Start-Sleep -Milliseconds 500' + #13#10 +
+    '      $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue' + #13#10 +
+    '    } while ($service -and $service.Status -ne "Stopped" -and (Get-Date) -lt $deadline)' + #13#10 +
+    '    if ($service -and $service.Status -ne "Stopped") { throw "Service $ServiceName did not stop within 45 seconds. Current status: $($service.Status)" }' + #13#10 +
+    '  }' + #13#10 +
+    '}' + #13#10 +
+    'Stop-ProcessByPath (Join-Path $installDirFull "runtime\node\node.exe")' + #13#10 +
+    'Stop-ProcessByPath (Join-Path $installDirFull "FileAssistantServerService.exe")' + #13#10 +
+    'Start-Sleep -Milliseconds 800' + #13#10 +
+    'Write-UpgradeLog "Upgrade preparation finished."' + #13#10;
+
+  SaveStringToFile(ScriptPath, Content, False);
+  Params := '-InstallDir "' + ExpandConstant('{app}') + '" -ServiceName "' + GetServiceName('') + '" -LogDir "' + DataRoot() + '\logs"';
+  if not RunPowerShellInDir(ScriptPath, Params, ExpandConstant('{tmp}')) then
+    Result := CustomMessage('UpgradePrepareFailed') + DataRoot() + '\logs\upgrade-prepare.log';
 end;
 
 procedure InstallNativeService();
@@ -515,7 +689,7 @@ begin
     if not RegQueryStringValue(HKLM, 'Software\FileAssistantServer', 'Port', Port) then
       Port := '5177';
     ScriptPath := ExpandConstant('{app}\deploy\server\uninstall-service-native.ps1');
-    Params := '-ServiceName "' + ServiceName + '" -Port ' + Port + ' -RemoveFirewallRule';
+    Params := '-ServiceName "' + ServiceName + '" -Port ' + Port + ' -BaseDir "' + ExpandConstant('{app}') + '" -RemoveFirewallRule';
     RunPowerShell(ScriptPath, Params);
   end;
 end;

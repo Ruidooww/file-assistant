@@ -7,5 +7,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>FileAssistantServerTray</AssemblyName>
     <RootNamespace>FileAssistant.ServerTray</RootNamespace>
+    <ApplicationIcon>..\..\assets\icons\file-assistant-server.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>

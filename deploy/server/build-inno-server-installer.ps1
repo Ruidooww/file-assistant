@@ -48,6 +48,18 @@ $serviceOut = Join-Path $root "build\server-service"
 $trayOut = Join-Path $root "build\server-tray"
 $script = Join-Path $root "installer\server-inno\FileAssistantServer.iss"
 $outputDir = Join-Path $root "deploy\server-installer"
+$clientInstallerTemplate = Join-Path $root "deploy\client-installer\FileAssistantClientSetup.exe"
+
+if (-not (Test-Path -LiteralPath $clientInstallerTemplate)) {
+  Write-Host "Client installer template was not found. Building client installer first..."
+  & (Join-Path $root "deploy\client\build-client-installer.ps1") `
+    -InnoCompilerPath $iscc `
+    -Configuration $Configuration
+}
+
+if (-not (Test-Path -LiteralPath $clientInstallerTemplate)) {
+  throw "Client installer template was not produced: $clientInstallerTemplate"
+}
 
 Remove-Item -LiteralPath $serviceOut -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $trayOut -Recurse -Force -ErrorAction SilentlyContinue
