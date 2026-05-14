@@ -1,7 +1,14 @@
+using System.Text.Json;
+
 namespace FileAssistant.WinClient;
 
 public sealed class ClientBootstrapOptions
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     public string ServerUrl { get; private set; } = "";
     public string RegistrationToken { get; private set; } = "";
     public string TokenKind { get; private set; } = "install-code";
@@ -12,23 +19,104 @@ public sealed class ClientBootstrapOptions
 
     public static ClientBootstrapOptions Load()
     {
-        var options = new ClientBootstrapOptions
-        {
-            ServerUrl = Environment.GetEnvironmentVariable("FA_SERVER_URL") ?? "",
-            RegistrationToken = Environment.GetEnvironmentVariable("FA_DEPLOY_TOKEN")
-                ?? Environment.GetEnvironmentVariable("FA_INSTALL_CODE")
-                ?? "",
-            DisplayName = Environment.GetEnvironmentVariable("FA_DISPLAY_NAME") ?? "",
-            ReceiveDir = Environment.GetEnvironmentVariable("FA_RECEIVE_DIR") ?? "",
-            AutoRegister = IsTruthy(Environment.GetEnvironmentVariable("FA_AUTO_REGISTER")),
-            MaintenanceMode = IsTruthy(Environment.GetEnvironmentVariable("FA_MAINTENANCE_MODE"))
-        };
+        var options = LoadInstallerBootstrap() ?? new ClientBootstrapOptions();
 
-        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("FA_DEPLOY_TOKEN")))
+        ApplyEnvironment(options);
+        ApplyCommandLine(options);
+        return options;
+    }
+
+    private static ClientBootstrapOptions? LoadInstallerBootstrap()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "client-bootstrap.json");
+        if (!File.Exists(path))
         {
-            options.TokenKind = "deploy-token";
+            return null;
         }
 
+        try
+        {
+            var json = File.ReadAllText(path);
+            var bootstrap = JsonSerializer.Deserialize<InstallerBootstrapConfig>(json, JsonOptions);
+            if (bootstrap is null)
+            {
+                return null;
+            }
+
+            var options = new ClientBootstrapOptions
+            {
+                ServerUrl = bootstrap.ServerUrl?.Trim() ?? "",
+                DisplayName = bootstrap.DisplayName?.Trim() ?? "",
+                ReceiveDir = bootstrap.ReceiveDir?.Trim() ?? "",
+                AutoRegister = bootstrap.AutoRegister,
+                MaintenanceMode = bootstrap.MaintenanceMode
+            };
+
+            if (!string.IsNullOrWhiteSpace(bootstrap.DeployToken))
+            {
+                options.RegistrationToken = bootstrap.DeployToken.Trim();
+                options.TokenKind = "deploy-token";
+            }
+            else if (!string.IsNullOrWhiteSpace(bootstrap.InstallCode))
+            {
+                options.RegistrationToken = bootstrap.InstallCode.Trim();
+                options.TokenKind = "install-code";
+            }
+
+            return options;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void ApplyEnvironment(ClientBootstrapOptions options)
+    {
+        var serverUrl = Environment.GetEnvironmentVariable("FA_SERVER_URL");
+        if (!string.IsNullOrWhiteSpace(serverUrl))
+        {
+            options.ServerUrl = serverUrl;
+        }
+
+        var deployToken = Environment.GetEnvironmentVariable("FA_DEPLOY_TOKEN");
+        var installCode = Environment.GetEnvironmentVariable("FA_INSTALL_CODE");
+        if (!string.IsNullOrWhiteSpace(deployToken))
+        {
+            options.RegistrationToken = deployToken;
+            options.TokenKind = "deploy-token";
+        }
+        else if (!string.IsNullOrWhiteSpace(installCode))
+        {
+            options.RegistrationToken = installCode;
+            options.TokenKind = "install-code";
+        }
+
+        var displayName = Environment.GetEnvironmentVariable("FA_DISPLAY_NAME");
+        if (!string.IsNullOrWhiteSpace(displayName))
+        {
+            options.DisplayName = displayName;
+        }
+
+        var receiveDir = Environment.GetEnvironmentVariable("FA_RECEIVE_DIR");
+        if (!string.IsNullOrWhiteSpace(receiveDir))
+        {
+            options.ReceiveDir = receiveDir;
+        }
+
+        if (IsTruthy(Environment.GetEnvironmentVariable("FA_AUTO_REGISTER")))
+        {
+            options.AutoRegister = true;
+        }
+
+        if (IsTruthy(Environment.GetEnvironmentVariable("FA_MAINTENANCE_MODE")))
+        {
+            options.MaintenanceMode = true;
+        }
+    }
+
+    private static void ApplyCommandLine(ClientBootstrapOptions options)
+    {
         var args = Environment.GetCommandLineArgs().Skip(1).ToArray();
         for (var index = 0; index < args.Length; index++)
         {
@@ -86,8 +174,6 @@ public sealed class ClientBootstrapOptions
                     break;
             }
         }
-
-        return options;
     }
 
     private static (string Name, string? Value) SplitArgument(string arg)
@@ -124,5 +210,16 @@ public sealed class ClientBootstrapOptions
             || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class InstallerBootstrapConfig
+    {
+        public string? ServerUrl { get; set; }
+        public string? DeployToken { get; set; }
+        public string? InstallCode { get; set; }
+        public string? DisplayName { get; set; }
+        public string? ReceiveDir { get; set; }
+        public bool AutoRegister { get; set; }
+        public bool MaintenanceMode { get; set; }
     }
 }

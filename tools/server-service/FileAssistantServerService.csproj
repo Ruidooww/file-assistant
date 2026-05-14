@@ -11,5 +11,6 @@
     <PublishSingleFile>true</PublishSingleFile>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationIcon>..\..\assets\icons\file-assistant-server.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>

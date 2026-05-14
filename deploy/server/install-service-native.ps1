@@ -65,6 +65,53 @@ function Wait-ServiceDeleted {
   return $false
 }
 
+function Wait-ServiceStatus {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Status,
+    [int]$TimeoutSeconds = 30
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $service) {
+      return $false
+    }
+    if ([string]$service.Status -eq $Status) {
+      return $true
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+
+  return $false
+}
+
+function Wait-HttpHealth {
+  param(
+    [int]$Port,
+    [int]$TimeoutSeconds = 45
+  )
+
+  $url = "http://127.0.0.1:$Port/api/health"
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    try {
+      $health = Invoke-RestMethod -Uri $url -TimeoutSec 3
+      if ($health.ok) {
+        Write-InstallLog "Health check succeeded: $url"
+        return $true
+      }
+      Write-InstallLog "Health endpoint responded but ok was not true: $url"
+    } catch {
+      Write-InstallLog "Health check pending: $($_.Exception.Message)"
+    }
+    Start-Sleep -Seconds 1
+  } while ((Get-Date) -lt $deadline)
+
+  return $false
+}
+
 Write-InstallLog "Installing service '$ServiceName'. BaseDir='$baseDirFull'. LogDir='$logDirFull'. StartupType='$StartupType'. Port='$Port'."
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -72,7 +119,9 @@ if ($existing) {
   Write-InstallLog "Existing service found. Status=$($existing.Status). Removing it before reinstall."
   if ($existing.Status -ne "Stopped") {
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    if (-not (Wait-ServiceStatus -Name $ServiceName -Status "Stopped" -TimeoutSeconds 45)) {
+      throw "Existing service $ServiceName did not stop cleanly before reinstall. See $installLog"
+    }
   }
   $delete = Invoke-NativeCommand sc.exe delete $ServiceName
   if ($delete.ExitCode -ne 0) {
@@ -124,9 +173,15 @@ if ($StartService) {
     Write-InstallLog "Starting service '$ServiceName'."
     Start-Service -Name $ServiceName -ErrorAction Stop
     Write-InstallLog "Service start requested successfully."
+    if (-not (Wait-ServiceStatus -Name $ServiceName -Status "Running" -TimeoutSeconds 30)) {
+      throw "Service did not reach Running status within 30 seconds."
+    }
+    if (-not (Wait-HttpHealth -Port $Port -TimeoutSeconds 45)) {
+      throw "Service is running, but http://127.0.0.1:$Port/api/health did not respond within 45 seconds. Check service-wrapper.err.log and server.err.log in $logDirFull."
+    }
   } catch {
-    Write-Warning "Service was installed but could not be started automatically. Start it later from Windows Services or check $installLog. $($_.Exception.Message)"
-    Write-InstallLog "WARNING: Service was installed but could not be started automatically. $($_.Exception.Message)"
+    Write-InstallLog "ERROR: Service was installed but could not be started or did not pass health check. $($_.Exception.Message)"
+    throw "Service was installed but could not be started or did not pass health check. $($_.Exception.Message). See $installLog"
   }
 }
 

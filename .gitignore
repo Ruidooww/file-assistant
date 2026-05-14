@@ -7,6 +7,7 @@ data/uploads/
 node_modules/
 *.log
 .DS_Store
+.vs/
 bin/
 obj/
 *.csproj.user
@@ -18,5 +19,7 @@ deploy/client/win-x64-self-contained/
 deploy/logs/
 deploy/run/
 deploy/server-installer/*.exe
+deploy/client-installer/*.exe
 tools/server-installer/payload.zip
 installer/server-inno/output/
+installer/client-inno/output/

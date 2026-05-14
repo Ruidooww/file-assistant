@@ -31,7 +31,6 @@ function statusPill(status) {
     purged: "danger",
   }[status] || "";
   const label = {
-    approved: "已放行",
     ready_to_deliver: "等待接收",
     pending_approval: "等待中转确认",
     uploading: "上传中",
@@ -121,7 +120,7 @@ function renderTransfers() {
   $("transfersBody").innerHTML = state.transfers
     .map((transfer) => {
       const isReceiver = transfer.receiverId === state.me?.id;
-      const ready = transfer.status === "approved" || transfer.status === "ready_to_deliver";
+      const ready = transfer.status === "ready_to_deliver";
       const canReceive = isReceiver
         && ready
         && transfer.deliveryStatus !== "delivered"

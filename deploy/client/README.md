@@ -2,6 +2,14 @@
 
 本目录放正式下发给 Windows 终端的客户端程序。
 
+正式交付优先使用安装包：
+
+```text
+deploy/client-installer/FileAssistantClientSetup.exe
+```
+
+本目录下的 `win-x64/` 和 `win-x64-self-contained/` 仍可用于快速验证或临时下发单个 exe。
+
 ## 目录选择
 
 - `win-x64/`：轻量版，需要目标机器已安装 .NET 8 Desktop Runtime。
@@ -12,6 +20,12 @@
 ## 批量下发命令
 
 管理端生成“一码多用”的批量部署令牌后，通过服务台或终端管理工具下发：
+
+```powershell
+.\FileAssistantClientSetup.exe /VERYSILENT /SUPPRESSMSGBOXES /SERVERURL="http://服务器IP:5177" /DEPLOYTOKEN="FA-XXXX-XXXX-XXXX-XXXX" /AUTOREGISTER=1
+```
+
+如果暂时不使用安装包，也可以直接运行客户端 exe：
 
 ```powershell
 .\FileAssistantClient.exe --server http://服务器IP:5177 --deploy-token FA-XXXX-XXXX-XXXX-XXXX --auto-register

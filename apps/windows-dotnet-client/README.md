@@ -12,11 +12,15 @@
 - 配置服务端地址。
 - 使用安装码注册客户端。
 - 支持通过命令行或环境变量传入服务地址和部署令牌，首次启动自动注册。
+- 支持读取安装器写入的 `client-bootstrap.json`，用于正式安装后的首次自动注册。
 - 注册成功后锁定服务地址、显示名、MAC、IP 和安装码，避免普通员工误改。
 - 自动读取本机 MAC、IP、系统信息。
 - 保存客户端凭证到 `%APPDATA%\FileAssistant\client.json`。
+- 客户端日志落盘到 `%APPDATA%\FileAssistant\logs\client.log`。
 - 刷新当前客户端状态、接收人员和传输列表。
 - 每 10 秒自动刷新一次。
+- 右下角托盘常驻，支持查看连接状态、服务地址、接收目录、打开主界面、打开接收目录、打开日志目录、重新连接和退出客户端。
+- 关闭窗口时默认隐藏到托盘，避免员工误关后台接收。
 - 发现新的“发给我且可接收”的文件时，会弹出系统托盘提示，并把窗口恢复到前台。
 - 选择组织人员发送文件。
 - 按服务端返回的分片大小上传文件。
@@ -139,6 +143,29 @@ dist\windows-client-win-x64-self-contained\FileAssistantClient.exe
 apps\windows-dotnet-client\publish-win-x64.cmd
 ```
 
+## 正式安装包
+
+构建自包含客户端安装包：
+
+```powershell
+cd C:\Users\Ruidoww\OneDrive\桌面\新建文件夹 - 副本\file-assistant
+.\deploy\client\build-client-installer.ps1
+```
+
+输出：
+
+```text
+deploy\client-installer\FileAssistantClientSetup.exe
+```
+
+静默安装示例：
+
+```powershell
+.\FileAssistantClientSetup.exe /VERYSILENT /SUPPRESSMSGBOXES /SERVERURL="http://服务器IP:5177" /DEPLOYTOKEN="FA-XXXX-XXXX-XXXX-XXXX" /AUTOREGISTER=1 /RECEIVEDIR="D:\FileAssistant\Received"
+```
+
+安装器会把服务地址、部署令牌、安装码、自动注册、显示名、接收目录写入安装目录下的 `client-bootstrap.json`。客户端首次启动时读取该文件；注册成功后，用户级凭证保存到 `%APPDATA%\FileAssistant\client.json`。
+
 ## 白名单建议
 
 现场加密软件白名单建议先添加：
@@ -157,9 +184,7 @@ C:\Users\Ruidoww\OneDrive\桌面\新建文件夹\file-assistant\dist\windows-cli
 
 ## 后续方向
 
-- 增加托盘和后台常驻。
-- 增加客户端日志落盘。
 - 增加断点续传发现和继续上传。
-- 增加安装包和代码签名。
+- 增加代码签名。
 - 增加设备指纹、网卡选择和更细的目录策略。
 - 根据现场要求评估 Win7/8 legacy 客户端路线。

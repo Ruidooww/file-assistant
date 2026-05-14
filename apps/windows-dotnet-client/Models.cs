@@ -32,6 +32,10 @@ public sealed class ClientDto
     public string IpAddress { get; set; } = "";
     public string Platform { get; set; } = "";
     public string EmployeeId { get; set; } = "";
+    public string EmployeeName { get; set; } = "";
+    public string EmployeeNo { get; set; } = "";
+    public string EmployeeTitle { get; set; } = "";
+    public string DepartmentName { get; set; } = "";
     public string Status { get; set; } = "";
 }
 
