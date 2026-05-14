@@ -8,6 +8,8 @@ node_modules/
 *.log
 .DS_Store
 .vs/
+HANDOFF.md
+HANDOFF-BACKUP-*.md
 bin/
 obj/
 *.csproj.user
