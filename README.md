@@ -32,18 +32,6 @@
 
 建议使用 Node.js 24 或更高版本；最低需要 Node.js 22.5，以便使用内置 SQLite 存储。
 
-```powershell
-cd C:\Users\Ruidoww\OneDrive\桌面\新建文件夹\file-assistant
-node apps/server/server.js
-```
-
-如果本机没有单独安装 Node.js，也可以使用当前 Codex 环境自带的 Node：
-
-```powershell
-cd C:\Users\Ruidoww\OneDrive\桌面\新建文件夹\file-assistant
-& "C:\Users\Ruidoww\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" apps/server/server.js
-```
-
 默认地址：
 
 - 首页：http://localhost:5177
