@@ -58,31 +58,13 @@ node apps/server/server.js
 
 当前已经增加一个轻量 Windows 验证客户端，用来测试真实终端上的透明解密和落地加密行为。
 
-运行：
-
-```powershell
-cd C:\Users\Ruidoww\OneDrive\桌面\新建文件夹\file-assistant\apps\windows-client
-.\start-client.cmd
-```
-
 说明文档见：`apps/windows-client/README.md`。
 
 ## Windows .NET 客户端
 
 当前也新增了正式 Windows 客户端工程化起点，基于 `.NET 8 WinForms`：
 
-```powershell
-cd C:\Users\Ruidoww\OneDrive\桌面\新建文件夹\file-assistant\apps\windows-dotnet-client
-dotnet run
-```
-
 说明文档见：`apps/windows-dotnet-client/README.md`。
-
-## 自测
-
-```powershell
-& "C:\Users\Ruidoww\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" --test test/api.test.js
-```
 
 自测会自动完成：生成安装码、注册两个客户端、创建部门和人员、绑定客户端、配置发送规则、按人员发送文件、管理员中转放行、发送者禁止取回、接收端接收确认、普通文件自动清除、重要备份保留、免确认自动流转、检查日志。
 
